@@ -33,6 +33,7 @@ pub fn run() {
             commands::deploy_full_stack,
             commands::check_existing_dns,
             commands::toggle_fullscreen,
+            commands::delete_cloudpress_vm,
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");

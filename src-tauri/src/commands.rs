@@ -773,3 +773,25 @@ pub fn toggle_fullscreen(app_handle: tauri::AppHandle) -> Result<bool, String> {
     }
 }
 
+#[tauri::command]
+pub async fn delete_cloudpress_vm<R: tauri::Runtime>(
+    gcp: Option<crate::gcp::GcpConfig>,
+    app_handle: tauri::AppHandle<R>,
+) -> Result<String, String> {
+    emit_log(&app_handle, "==================================================");
+    emit_log(&app_handle, "🗑️ INITIATING VM DELETION UPON USER REQUEST");
+    emit_log(&app_handle, "==================================================");
+
+    if let Some(mut cfg) = gcp {
+        // Clear existing_vm_ip override so cleanup is never skipped during explicit user teardown
+        cfg.existing_vm_ip = None;
+        let prov = crate::gcp::GcpProvisioner::new(cfg);
+        prov.cleanup_existing_cloudpress_vms(&app_handle).await?;
+        emit_log(&app_handle, "[GCP] CloudPress Google Cloud VM teardown completed.");
+        Ok("Google Cloud VM has been successfully deleted.".into())
+    } else {
+        Err("No Google Cloud configuration available to delete VM.".into())
+    }
+}
+
+

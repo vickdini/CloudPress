@@ -108,6 +108,8 @@ export const App: React.FC = () => {
   const [deployError, setDeployError] = useState<string | null>(null);
   const [currentStageNumber, setCurrentStageNumber] = useState<number>(1);
   const [stages, setStages] = useState<StageProgress[]>(INITIAL_STAGES);
+  const [isDeletingVm, setIsDeletingVm] = useState<boolean>(false);
+  const [vmDeleted, setVmDeleted] = useState<boolean>(false);
 
   // Terminal State - default closed to keep UI friendly and calm
   const [logs, setLogs] = useState<LogMessage[]>([
@@ -289,6 +291,7 @@ export const App: React.FC = () => {
       setStages(INITIAL_STAGES);
       setLogs([]);
       setActiveStep(1);
+      setVmDeleted(false);
       addLog('[Reset] Form fields reset to default.');
     }
   };
@@ -336,6 +339,7 @@ export const App: React.FC = () => {
       setIsDeploying(true);
       setDeployError(null);
       setExistingDnsModal(null);
+      setVmDeleted(false);
       setActiveStep(5); // Switch view to Launch status screen
       setStages(INITIAL_STAGES.map(s => ({ ...s, status: 'idle' })));
 
@@ -367,6 +371,23 @@ export const App: React.FC = () => {
       console.error('Failed to cancel deployment:', err);
     } finally {
       setIsDeploying(false);
+    }
+  };
+
+  const handleDeleteVm = async () => {
+    try {
+      setIsDeletingVm(true);
+      setIsTerminalOpen(true);
+      addLog('[GCP] User initiated CloudPress Google Cloud VM teardown & deletion...');
+      const res = await invoke<string>('delete_cloudpress_vm', { gcp: gcpConfig });
+      addLog(`[GCP Success] ${res}`);
+      setVmDeleted(true);
+    } catch (err) {
+      const errorStr = String(err);
+      addLog(`[GCP ERROR] Failed to delete VM: ${errorStr}`);
+      alert(`Failed to delete VM: ${errorStr}`);
+    } finally {
+      setIsDeletingVm(false);
     }
   };
 
@@ -504,6 +525,9 @@ export const App: React.FC = () => {
               onOpenTerminal={() => setIsTerminalOpen(true)}
               onBack={() => setActiveStep(4)}
               onJumpToStep={step => setActiveStep(step)}
+              onDeleteVm={handleDeleteVm}
+              isDeletingVm={isDeletingVm}
+              vmDeleted={vmDeleted}
             />
           )}
         </div>

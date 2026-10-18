@@ -19,6 +19,7 @@ import {
   Sparkles,
   XCircle,
   RefreshCw,
+  Trash2,
 } from 'lucide-react';
 
 interface Step5LaunchProps {
@@ -35,6 +36,9 @@ interface Step5LaunchProps {
   onOpenTerminal: () => void;
   onBack: () => void;
   onJumpToStep: (step: number) => void;
+  onDeleteVm?: () => Promise<void>;
+  isDeletingVm?: boolean;
+  vmDeleted?: boolean;
 }
 
 const FRIENDLY_STAGE_INFO: Record<number, { title: string; desc: string }> = {
@@ -78,9 +82,13 @@ export const Step5Launch: React.FC<Step5LaunchProps> = ({
   onOpenTerminal,
   onBack,
   onJumpToStep,
+  onDeleteVm,
+  isDeletingVm = false,
+  vmDeleted = false,
 }) => {
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [copiedInfo, setCopiedInfo] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   useEffect(() => {
     let interval: any;
@@ -610,6 +618,103 @@ SMTP (Outgoing): mail.${deployConfig.domain}:587 (STARTTLS)
                 </div>
               );
             })}
+          </div>
+        </div>
+      )}
+
+      {/* Delete VM Action (only visible after successful deployment) */}
+      {isCompleted && (
+        <div className="pt-4 border-t border-surface-border/50">
+          <div className="rounded-2xl p-5 bg-gradient-to-r from-rose-950/20 via-surface to-surface border border-rose-500/20 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2 text-sm font-bold text-white">
+                <Trash2 className="w-4 h-4 text-rose-400" />
+                <span>Teardown &amp; VM Cleanup</span>
+              </div>
+              <p className="text-xs text-slate-400">
+                {vmDeleted
+                  ? 'The Google Cloud VM instance has been successfully deleted from your account.'
+                  : 'Permanently remove the deployed Google Cloud e2-micro VM and stop all services to free up cloud resources.'}
+              </p>
+            </div>
+
+            {vmDeleted ? (
+              <div className="px-4 py-2.5 rounded-xl text-xs font-semibold bg-slate-800 text-slate-400 border border-slate-700 flex items-center gap-2 shrink-0">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                <span>VM Successfully Deleted</span>
+              </div>
+            ) : (
+              <button
+                type="button"
+                disabled={isDeletingVm}
+                onClick={() => setShowDeleteConfirm(true)}
+                className="px-5 py-2.5 rounded-xl text-xs font-bold bg-rose-600/90 hover:bg-rose-600 text-white shadow-lg shadow-rose-900/30 border border-rose-500/40 flex items-center gap-2 transition-all active:scale-95 shrink-0 cursor-pointer disabled:opacity-50"
+              >
+                {isDeletingVm ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span>Deleting VM...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-4 h-4" />
+                    <span>Delete Cloud VM</span>
+                  </>
+                )}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Confirmation Modal to Delete Deployed VM */}
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="bg-surface border border-surface-border rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5 animate-in zoom-in-95 duration-200">
+            <div className="flex items-start gap-4">
+              <div className="p-3 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-400 shrink-0">
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-base font-bold text-white">Permanently Delete Cloud VM?</h3>
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  This will shut down and delete the Google Cloud VM running for{' '}
+                  <span className="text-white font-mono font-semibold">{deployConfig.domain}</span>.
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-rose-950/30 border border-rose-500/20 text-xs text-rose-300 space-y-1.5">
+              <div className="font-semibold text-rose-200">Warning: Permanent Data Loss</div>
+              <ul className="list-disc list-inside text-[11px] text-rose-300/80 space-y-0.5">
+                <li>Your WordPress site and all media uploads will be deleted.</li>
+                <li>Your MariaDB database and user accounts will be permanently destroyed.</li>
+                <li>Your local mail server and inboxes will be wiped.</li>
+              </ul>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowDeleteConfirm(false)}
+                className="px-4 py-2 text-xs font-semibold text-slate-300 hover:text-white bg-surface-lighter hover:bg-surface-border rounded-xl border border-surface-border transition-colors cursor-pointer"
+              >
+                Cancel / Keep VM
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  setShowDeleteConfirm(false);
+                  if (onDeleteVm) {
+                    await onDeleteVm();
+                  }
+                }}
+                className="px-5 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-500 rounded-xl shadow-lg shadow-rose-600/30 border border-rose-500/50 flex items-center gap-1.5 transition-all cursor-pointer"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>Yes, Delete VM Now</span>
+              </button>
+            </div>
           </div>
         </div>
       )}
