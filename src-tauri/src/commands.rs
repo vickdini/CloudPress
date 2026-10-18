@@ -511,12 +511,25 @@ pub async fn deploy_full_stack(
             }
         };
 
+        // Wait for SSH daemon and user keys to be completely ready on the newly created VM
+        if let Err(e) = SshManager::wait_for_ssh_ready(&ssh_cfg, &temp_key_path, 90, &app_handle).await {
+            let _ = std::fs::remove_file(&temp_key_path);
+            emit_stage(
+                &app_handle,
+                3,
+                "Bootstrapping Server via SSH",
+                "error",
+                &e,
+            );
+            return Err(e);
+        }
+
         // Create remote folder
         emit_log(
             &app_handle,
             "[SSH] Initializing remote directory: /opt/wp-deployer...",
         );
-        let prepare_cmd = "sudo mkdir -p /opt/wp-deployer && sudo chown -R ubuntu:ubuntu /opt/wp-deployer";
+        let prepare_cmd = "sudo mkdir -p /opt/wp-deployer && sudo chown -R ubuntu:ubuntu /opt/wp-deployer && sudo chmod 755 /opt/wp-deployer";
 
         let mut prep_proc = tokio::process::Command::new("ssh");
         prep_proc
@@ -526,9 +539,17 @@ pub async fn deploy_full_stack(
             .arg("StrictHostKeyChecking=no")
             .arg("-o")
             .arg("UserKnownHostsFile=NUL")
+            .arg("-o")
+            .arg("ConnectTimeout=15")
             .arg(format!("ubuntu@{}", vm_ip))
             .arg(prepare_cmd);
-        let _ = prep_proc.output().await;
+        let prep_res = prep_proc.output().await;
+        if let Ok(out) = prep_res {
+            if !out.status.success() {
+                let err_out = String::from_utf8_lossy(&out.stderr);
+                emit_log(&app_handle, format!("[SSH WARNING] Directory initialization notice: {}", err_out));
+            }
+        }
 
         // Generate files from templates
         emit_log(&app_handle, "[Templates] Generating docker-compose.yml...");

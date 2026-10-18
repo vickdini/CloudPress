@@ -137,6 +137,58 @@ impl SshManager {
         }
     }
 
+    /// Poll until SSH is accepting connections and accepts the key
+    pub async fn wait_for_ssh_ready<R: tauri::Runtime>(
+        cfg: &SshConfig,
+        key_path: &PathBuf,
+        max_wait_secs: u64,
+        app_handle: &tauri::AppHandle<R>,
+    ) -> Result<(), String> {
+        let start = std::time::Instant::now();
+        let _ = app_handle.emit(
+            "deploy-log",
+            format!("[SSH] Waiting for SSH service on {} to start and authenticate...", cfg.host),
+        );
+
+        while start.elapsed().as_secs() < max_wait_secs {
+            let mut cmd = tokio::process::Command::new("ssh");
+            cmd.arg("-i")
+                .arg(key_path)
+                .arg("-p")
+                .arg(cfg.port.to_string())
+                .arg("-o")
+                .arg("StrictHostKeyChecking=no")
+                .arg("-o")
+                .arg("UserKnownHostsFile=NUL")
+                .arg("-o")
+                .arg("ConnectTimeout=5")
+                .arg(format!("{}@{}", cfg.username, cfg.host))
+                .arg("echo 'SSH_VM_READY'");
+
+            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+            if let Ok(output) = cmd.output().await {
+                if output.status.success() {
+                    let out_str = String::from_utf8_lossy(&output.stdout);
+                    if out_str.contains("SSH_VM_READY") {
+                        let _ = app_handle.emit(
+                            "deploy-log",
+                            format!("[SSH] VM {} is ready and accepted key authentication! Proceeding...", cfg.host),
+                        );
+                        return Ok(());
+                    }
+                }
+            }
+
+            tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+        }
+
+        Err(format!(
+            "Timed out waiting for SSH service on {} after {}s. The VM may still be booting.",
+            cfg.host, max_wait_secs
+        ))
+    }
+
     /// Transfer a file to the remote server using base64 stream and sudo tee
     pub async fn upload_file_content(
         cfg: &SshConfig,
@@ -147,36 +199,48 @@ impl SshManager {
         use base64::Engine;
         let b64 = base64::engine::general_purpose::STANDARD.encode(content.as_bytes());
 
+        // Always ensure the parent directory exists before writing to the target file
         let remote_cmd = format!(
-            "echo '{}' | base64 -d | sudo tee {} > /dev/null",
-            b64, remote_path
+            "sudo mkdir -p $(dirname {}) && echo '{}' | base64 -d | sudo tee {} > /dev/null",
+            remote_path, b64, remote_path
         );
 
-        let mut cmd = tokio::process::Command::new("ssh");
-        cmd.arg("-i")
-            .arg(key_path)
-            .arg("-p")
-            .arg(cfg.port.to_string())
-            .arg("-o")
-            .arg("StrictHostKeyChecking=no")
-            .arg("-o")
-            .arg("UserKnownHostsFile=NUL")
-            .arg("-o")
-            .arg("ConnectTimeout=15")
-            .arg(format!("{}@{}", cfg.username, cfg.host))
-            .arg(remote_cmd);
+        let mut last_err = String::new();
+        for attempt in 1..=3 {
+            let mut cmd = tokio::process::Command::new("ssh");
+            cmd.arg("-i")
+                .arg(key_path)
+                .arg("-p")
+                .arg(cfg.port.to_string())
+                .arg("-o")
+                .arg("StrictHostKeyChecking=no")
+                .arg("-o")
+                .arg("UserKnownHostsFile=NUL")
+                .arg("-o")
+                .arg("ConnectTimeout=15")
+                .arg(format!("{}@{}", cfg.username, cfg.host))
+                .arg(&remote_cmd);
 
-        let output = cmd
-            .output()
-            .await
-            .map_err(|e| format!("Failed to upload file to {}: {}", remote_path, e))?;
+            match cmd.output().await {
+                Ok(output) => {
+                    if output.status.success() {
+                        return Ok(());
+                    } else {
+                        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                        last_err = format!("Error uploading {}: {}", remote_path, stderr);
+                    }
+                }
+                Err(e) => {
+                    last_err = format!("Failed to execute SSH upload to {}: {}", remote_path, e);
+                }
+            }
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("Error uploading {}: {}", remote_path, stderr));
+            if attempt < 3 {
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            }
         }
 
-        Ok(())
+        Err(last_err)
     }
 
     /// Execute bootstrap script remotely and stream stdout/stderr in real-time
