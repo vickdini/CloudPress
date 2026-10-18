@@ -66,7 +66,7 @@ impl Templates {
     image: wordpress:fpm-alpine
     restart: unless-stopped
     environment:
-      WORDPRESS_DB_HOST: db:3306
+      WORDPRESS_DB_HOST: db
       WORDPRESS_DB_NAME: ${MYSQL_DATABASE:-wordpress}
       WORDPRESS_DB_USER: ${MYSQL_USER:-wpuser}
       WORDPRESS_DB_PASSWORD: ${MYSQL_PASSWORD}
@@ -74,8 +74,8 @@ impl Templates {
         define('WP_HOME', 'https://${DOMAIN}');
         define('WP_SITEURL', 'https://${DOMAIN}');
         define('FORCE_SSL_ADMIN', true);
-        if (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') {
-            $_SERVER['HTTPS'] = 'on';
+        if (isset($$_SERVER['HTTP_X_FORWARDED_PROTO']) && $$_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') {
+            $$_SERVER['HTTPS'] = 'on';
         }
     volumes:
       - wp_data:/var/www/html
@@ -103,9 +103,9 @@ impl Templates {
 
   wpcli:
     image: wordpress:cli-php8.3
-    user: "33:33"
+    user: "0:0"
     environment:
-      WORDPRESS_DB_HOST: db:3306
+      WORDPRESS_DB_HOST: db
       WORDPRESS_DB_NAME: ${MYSQL_DATABASE:-wordpress}
       WORDPRESS_DB_USER: ${MYSQL_USER:-wpuser}
       WORDPRESS_DB_PASSWORD: ${MYSQL_PASSWORD}
@@ -270,7 +270,8 @@ add_action('phpmailer_init', function($phpmailer) {{
         let mu_plugin_content = Self::wp_smtp_mu_plugin(cfg);
         // Base64 encode the plugin to avoid escaping issues in bash
         use base64::Engine;
-        let mu_plugin_b64 = base64::engine::general_purpose::STANDARD.encode(mu_plugin_content.as_bytes());
+        let mu_plugin_b64 =
+            base64::engine::general_purpose::STANDARD.encode(mu_plugin_content.as_bytes());
 
         format!(
             r#"#!/usr/bin/env bash
@@ -311,7 +312,7 @@ fi
 
 # 3. Ensure Docker and Docker Compose Plugin are installed
 if ! command -v docker &> /dev/null; then
-    echo "[BOOTSTRAP] Docker not found. Installing Docker engine (this may take 1-2 minutes)..."
+    echo "[BOOTSTRAP] Docker not found. Installing Docker engine (this takes about 5 minutes)..."
     curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
     sh /tmp/get-docker.sh 2>&1 | grep -v '^+ ' || true
     systemctl enable docker
@@ -349,44 +350,97 @@ fi
 echo "===END_DKIM_OUTPUT==="
 
 # 6. WordPress core install & MU-Plugin configuration
-echo "[BOOTSTRAP] Waiting for MariaDB and WordPress to be ready..."
-RETRIES=30
-until docker compose exec -T db mariadb-admin ping -h localhost -u root -p"{db_root_pass}" --silent; do
-    echo "[BOOTSTRAP] Waiting for MariaDB..."
-    sleep 2
+# Wait for WordPress container to initialize core files into volume
+echo "[BOOTSTRAP] Waiting for WordPress core initialization..."
+RETRIES=40
+until docker compose exec -T -u root wordpress test -f /var/www/html/wp-includes/version.php; do
+    echo "[BOOTSTRAP] Waiting for WordPress files..."
+    sleep 3
     RETRIES=$((RETRIES-1))
     if [ $RETRIES -le 0 ]; then
-        echo "[BOOTSTRAP] MariaDB took too long to start, continuing..."
         break
     fi
 done
 
-echo "[BOOTSTRAP] Installing WordPress core via wpcli..."
-docker compose run --rm wpcli wp core install \
-    --url="https://{domain}" \
-    --title="{wp_title}" \
-    --admin_user="{wp_user}" \
-    --admin_password="{wp_pass}" \
-    --admin_email="{wp_email}" \
-    --skip-email \
-    --allow-root || echo "[BOOTSTRAP] WordPress may already be installed."
+# Configure PHP-FPM to preserve container environment variables
+docker compose exec -T -u root wordpress sh -c 'echo "clear_env = no" >> /usr/local/etc/php-fpm.d/zz-docker.conf' || true
+
+# Wait for MariaDB to be fully initialized and accept queries from WordPress
+echo "[BOOTSTRAP] Waiting for MariaDB to accept connections from WordPress container..."
+RETRIES=60
+until docker compose exec -T -u root wordpress php -r '
+mysqli_report(MYSQLI_REPORT_OFF);
+$conn = @mysqli_connect("db", "{db_user}", "{db_pass}", "{db_name}");
+if ($conn) {{
+    mysqli_close($conn);
+    exit(0);
+}}
+exit(1);
+'; do
+    echo "[BOOTSTRAP] Waiting for database 'db' to be ready..."
+    sleep 3
+    RETRIES=$((RETRIES-1))
+    if [ $RETRIES -le 0 ]; then
+        echo "[BOOTSTRAP ERROR] Database connection to MariaDB timed out."
+        exit 1
+    fi
+done
+echo "[BOOTSTRAP] Database connection verified successfully!"
+
+echo "[BOOTSTRAP] Setting initial permissions on WordPress volume..."
+docker compose exec -T -u root wordpress chown -R www-data:www-data /var/www/html || true
+
+echo "[BOOTSTRAP] Generating robust wp-config.php..."
+docker compose run --rm wpcli wp config create \
+    --dbname="{db_name}" \
+    --dbuser="{db_user}" \
+    --dbpass="{db_pass}" \
+    --dbhost="db" \
+    --force \
+    --extra-php="
+define('WP_HOME', 'https://{domain}');
+define('WP_SITEURL', 'https://{domain}');
+define('FORCE_SSL_ADMIN', true);
+if (isset(\$_SERVER['HTTP_X_FORWARDED_PROTO']) && \$_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') {{
+    \$_SERVER['HTTPS'] = 'on';
+}}
+" \
+    --allow-root
+
+if ! docker compose run --rm wpcli wp core is-installed --allow-root 2>/dev/null; then
+    echo "[BOOTSTRAP] Installing WordPress core via wpcli..."
+    docker compose run --rm wpcli wp core install \
+        --url="https://{domain}" \
+        --title="{wp_title}" \
+        --admin_user="{wp_user}" \
+        --admin_password="{wp_pass}" \
+        --admin_email="{wp_email}" \
+        --skip-email \
+        --allow-root
+else
+    echo "[BOOTSTRAP] WordPress is already installed."
+fi
 
 # 7. Install SMTP MU-Plugin
 echo "[BOOTSTRAP] Installing SMTP MU-Plugin to route WordPress mail..."
-docker compose run --rm wpcli mkdir -p /var/www/html/wp-content/mu-plugins
-echo "{mu_plugin_b64}" | base64 -d > /tmp/smtp.php
-docker cp /tmp/smtp.php $(docker compose ps -q wordpress):/var/www/html/wp-content/mu-plugins/smtp.php || true
-rm -f /tmp/smtp.php
+docker compose exec -T -u root wordpress mkdir -p /var/www/html/wp-content/mu-plugins
+echo "{mu_plugin_b64}" | base64 -d | docker compose exec -T -u root wordpress tee /var/www/html/wp-content/mu-plugins/smtp.php > /dev/null
 
 echo "[BOOTSTRAP] Setting correct permissions on WordPress files..."
 docker compose exec -T -u root wordpress chown -R www-data:www-data /var/www/html || true
+docker compose exec -T -u root wordpress chmod -R 755 /var/www/html || true
+
+echo "[BOOTSTRAP] Restarting WordPress PHP-FPM container..."
+docker compose restart wordpress
 
 echo "[BOOTSTRAP] Stack successfully deployed and active!"
 "#,
             domain = cfg.domain,
             mail_acc = cfg.mail_account,
             mail_pass = cfg.mail_password,
-            db_root_pass = cfg.mysql_root_password,
+            db_name = cfg.mysql_database,
+            db_user = cfg.mysql_user,
+            db_pass = cfg.mysql_password,
             wp_title = cfg.wp_site_title,
             wp_user = cfg.wp_admin_user,
             wp_pass = cfg.wp_admin_password,
