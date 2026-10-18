@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { Header } from './components/Header';
-import { Step1Oci } from './components/Step1Oci';
-import { Step2Cloudflare } from './components/Step2Cloudflare';
-import { Step3AppConfig } from './components/Step3AppConfig';
-import { Step4Deploy } from './components/Step4Deploy';
+import { Step1Website } from './components/Step1Website';
+import { Step2Server } from './components/Step2Server';
+import { Step3Domain } from './components/Step3Domain';
+import { Step4Email } from './components/Step4Email';
+import { Step5Launch } from './components/Step5Launch';
 import { Terminal } from './components/Terminal';
 import type {
   OciConfig,
@@ -11,14 +12,15 @@ import type {
   FullDeployPayload,
   StageProgress,
   LogMessage,
+  GeneratedKeyPair,
 } from './types';
 import {
+  Globe,
   Server,
   Cloud,
-  Settings,
+  Mail,
   Rocket,
-  ChevronRight,
-  ChevronLeft,
+  Check,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -26,39 +28,72 @@ import { listen } from '@tauri-apps/api/event';
 const INITIAL_STAGES: StageProgress[] = [
   {
     stage: 1,
-    stage_name: 'Provisioning OCI Arm64 VM & Security Ports',
+    stage_name: 'Allocating Free Cloud Server & Firewall',
     status: 'idle',
-    message: 'Allocates VM.Standard.A1.Flex (4 OCPUs, 24GB RAM) on Oracle Always Free.',
+    message: 'Allocates VM.Standard.A1.Flex (1 core OCPU, 6 GB memory, 1 Gbps) on Oracle Always Free.',
   },
   {
     stage: 2,
-    stage_name: 'Configuring Initial Cloudflare DNS',
+    stage_name: 'Connecting Domain & Cloudflare DNS',
     status: 'idle',
     message: 'Upserts A records for @, www, mail and sets MX & SPF/DMARC policies.',
   },
   {
     stage: 3,
-    stage_name: 'Bootstrapping Server via SSH',
+    stage_name: 'Securing Server & Installing Software',
     status: 'idle',
     message: 'Configures 2GB swapfile, opens OS firewall iptables, installs Docker Engine.',
   },
   {
     stage: 4,
-    stage_name: 'Deploying Docker Compose Stack',
+    stage_name: 'Starting WordPress & Email Stack',
     status: 'idle',
     message: 'Starts Caddy 2, WordPress FPM, MariaDB 11, and Docker-Mailserver.',
   },
   {
     stage: 5,
-    stage_name: 'Extracting OpenDKIM & Pushing DNS',
+    stage_name: 'Generating Email Security Keys (DKIM)',
     status: 'idle',
     message: 'Generates DKIM keys in container and pushes mail._domainkey to Cloudflare.',
   },
   {
     stage: 6,
-    stage_name: 'Finalizing WordPress Installation & SMTP',
+    stage_name: 'Finalizing WordPress & Email Integration',
     status: 'idle',
     message: 'Runs wp core install and activates lightweight SMTP MU-Plugin.',
+  },
+];
+
+const STEPS = [
+  {
+    id: 1,
+    title: 'Website & Login',
+    subtitle: 'Name & passwords',
+    icon: Globe,
+  },
+  {
+    id: 2,
+    title: 'Free Server',
+    subtitle: '1 OCPU / 6GB RAM',
+    icon: Server,
+  },
+  {
+    id: 3,
+    title: 'Connect Domain',
+    subtitle: 'Cloudflare & SSL',
+    icon: Cloud,
+  },
+  {
+    id: 4,
+    title: 'Email Setup',
+    subtitle: 'Mailbox & sending',
+    icon: Mail,
+  },
+  {
+    id: 5,
+    title: 'Review & Launch',
+    subtitle: 'Autonomous deploy',
+    icon: Rocket,
   },
 ];
 
@@ -69,16 +104,16 @@ export const App: React.FC = () => {
   const [currentStageNumber, setCurrentStageNumber] = useState<number>(1);
   const [stages, setStages] = useState<StageProgress[]>(INITIAL_STAGES);
 
-  // Terminal State
+  // Terminal State - default closed to keep UI friendly and calm
   const [logs, setLogs] = useState<LogMessage[]>([
     {
       id: 'init',
       timestamp: '00:00:00',
-      text: '[CloudPress Initialized] Welcome. Configure your credentials to deploy.',
+      text: '[CloudPress Initialized] Welcome to the guided setup wizard.',
       type: 'info',
     },
   ]);
-  const [isTerminalOpen, setIsTerminalOpen] = useState<boolean>(true);
+  const [isTerminalOpen, setIsTerminalOpen] = useState<boolean>(false);
 
   // Form State
   const [ociConfig, setOciConfig] = useState<OciConfig>({
@@ -89,8 +124,8 @@ export const App: React.FC = () => {
     fingerprint: '',
     private_key_path: '',
     shape: 'VM.Standard.A1.Flex',
-    ocpus: 4,
-    memory_in_gbs: 24,
+    ocpus: 1,
+    memory_in_gbs: 6,
     ssh_public_key: '',
     auto_retry_out_of_capacity: true,
     existing_vm_ip: '',
@@ -103,7 +138,7 @@ export const App: React.FC = () => {
   const [deployConfig, setDeployConfig] = useState<DeployConfig>({
     domain: 'example.com',
     oci_vm_ip: '',
-    wp_site_title: 'My Cloud WordPress',
+    wp_site_title: 'My Free Cloud Website',
     wp_admin_user: 'admin',
     wp_admin_email: 'admin@example.com',
     wp_admin_password: 'ChangeMeWp123!',
@@ -121,7 +156,10 @@ export const App: React.FC = () => {
   // Log append helper
   const addLog = (text: string) => {
     const now = new Date();
-    const timeStr = now.toTimeString().split(' ')[0] + '.' + String(now.getMilliseconds()).padStart(3, '0');
+    const timeStr =
+      now.toTimeString().split(' ')[0] +
+      '.' +
+      String(now.getMilliseconds()).padStart(3, '0');
     setLogs(prev => [
       ...prev,
       {
@@ -133,11 +171,25 @@ export const App: React.FC = () => {
     ]);
   };
 
+  // Pre-generate SSH Key on initial mount so users don't have to fiddle with keys manually
+  useEffect(() => {
+    const initSshKey = async () => {
+      try {
+        const res = await invoke<GeneratedKeyPair>('generate_ssh_key');
+        setOciConfig(prev => ({ ...prev, ssh_public_key: res.public_key }));
+        setSshPrivateKey(res.private_key);
+        addLog('[Security Key] Automatically initialized high-security Ed25519 digital key.');
+      } catch {
+        // Fallback or ignore in browser dev preview
+      }
+    };
+    initSshKey();
+  }, []);
+
   // Setup Tauri Event Listeners
   useEffect(() => {
     let unlistenLog: (() => void) | undefined;
     let unlistenStage: (() => void) | undefined;
-
 
     const setupListeners = async () => {
       try {
@@ -177,7 +229,7 @@ export const App: React.FC = () => {
     try {
       await invoke('save_profile', { profileJson: JSON.stringify(profile, null, 2) });
       addLog('[Profile Saved] Configuration saved locally to ~/.cloudpress/profile.json');
-      alert('Profile saved successfully!');
+      alert('Your progress has been saved! You can load it anytime.');
     } catch (err) {
       alert(`Failed to save profile: ${err}`);
     }
@@ -193,17 +245,18 @@ export const App: React.FC = () => {
       if (data.cfZoneId) setCfZoneId(data.cfZoneId);
       if (data.deployConfig) setDeployConfig(data.deployConfig);
       addLog('[Profile Loaded] Successfully loaded settings from ~/.cloudpress/profile.json');
-      alert('Profile loaded successfully!');
+      alert('Saved profile loaded successfully!');
     } catch (err) {
       alert(`Failed to load profile: ${err}`);
     }
   };
 
   const handleReset = () => {
-    if (confirm('Are you sure you want to reset all form fields to default?')) {
+    if (confirm('Are you sure you want to reset all form fields back to blank defaults?')) {
       setStages(INITIAL_STAGES);
       setLogs([]);
-      addLog('[Reset] Form fields reset to defaults.');
+      setActiveStep(1);
+      addLog('[Reset] Form fields reset to default.');
     }
   };
 
@@ -212,7 +265,7 @@ export const App: React.FC = () => {
     try {
       setIsDeploying(true);
       setDeployError(null);
-      setIsTerminalOpen(true);
+      setActiveStep(5); // Switch view to Launch status screen
       setStages(INITIAL_STAGES.map(s => ({ ...s, status: 'idle' })));
 
       const payload: FullDeployPayload = {
@@ -234,181 +287,155 @@ export const App: React.FC = () => {
     }
   };
 
+  const handleCancelDeploy = async () => {
+    try {
+      await invoke('cancel_deployment');
+      addLog('[Cancellation] Stopping deployment process...');
+    } catch (err) {
+      console.error('Failed to cancel deployment:', err);
+    } finally {
+      setIsDeploying(false);
+    }
+  };
+
   return (
-    <div className="min-h-screen bg-background text-slate-100 flex flex-col font-sans pb-40">
+    <div className="min-h-screen bg-background text-slate-100 flex flex-col font-sans pb-28 selection:bg-indigo-500/30 selection:text-indigo-200">
       <Header
         onSaveProfile={handleSaveProfile}
         onLoadProfile={handleLoadProfile}
         onReset={handleReset}
         isDeploying={isDeploying}
+        currentStep={activeStep}
+        totalSteps={5}
       />
 
       {/* Main Container */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6">
-        {/* Step Navigation Bar */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
-          <button
-            type="button"
-            onClick={() => setActiveStep(1)}
-            className={`p-3.5 rounded-xl border text-left transition-all ${
-              activeStep === 1
-                ? 'bg-surface-lighter border-indigo-500 shadow-md shadow-indigo-500/10'
-                : 'bg-surface/60 border-surface-border hover:bg-surface-lighter/50'
-            }`}
-          >
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-[10px] font-mono font-bold uppercase text-slate-400">Step 1</span>
-              <Server className={`w-4 h-4 ${activeStep === 1 ? 'text-indigo-400' : 'text-slate-500'}`} />
-            </div>
-            <div className="text-xs font-semibold text-white">Oracle Arm64 &amp; SSH</div>
-            <div className="text-[11px] text-slate-400 truncate">VM.Standard.A1.Flex</div>
-          </button>
+      <main className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-8 space-y-8">
+        {/* Step-by-Step Progress Bar (Process Stepper) */}
+        <nav aria-label="Deployment Process Steps" className="bg-surface/90 border border-surface-border rounded-2xl p-3 sm:p-4 shadow-xl backdrop-blur-md">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 sm:gap-3">
+            {STEPS.map((step) => {
+              const Icon = step.icon;
+              const isActive = activeStep === step.id;
+              const isPast = activeStep > step.id;
 
-          <button
-            type="button"
-            onClick={() => setActiveStep(2)}
-            className={`p-3.5 rounded-xl border text-left transition-all ${
-              activeStep === 2
-                ? 'bg-surface-lighter border-cyan-500 shadow-md shadow-cyan-500/10'
-                : 'bg-surface/60 border-surface-border hover:bg-surface-lighter/50'
-            }`}
-          >
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-[10px] font-mono font-bold uppercase text-slate-400">Step 2</span>
-              <Cloud className={`w-4 h-4 ${activeStep === 2 ? 'text-cyan-400' : 'text-slate-500'}`} />
-            </div>
-            <div className="text-xs font-semibold text-white">Domain &amp; Cloudflare</div>
-            <div className="text-[11px] text-slate-400 truncate">Automated DNS v4</div>
-          </button>
+              return (
+                <button
+                  key={step.id}
+                  type="button"
+                  onClick={() => !isDeploying && setActiveStep(step.id)}
+                  disabled={isDeploying}
+                  className={`relative p-3 rounded-xl border text-left transition-all flex items-start gap-3 select-none ${
+                    isActive
+                      ? 'bg-surface-lighter border-indigo-500 shadow-md shadow-indigo-500/10 ring-1 ring-indigo-500/30'
+                      : isPast
+                      ? 'bg-surface-lighter/40 border-emerald-500/30 hover:bg-surface-lighter/70'
+                      : 'bg-surface/50 border-surface-border/50 hover:bg-surface-lighter/40'
+                  }`}
+                >
+                  {/* Step Icon or Completed Check */}
+                  <div className="mt-0.5">
+                    {isPast ? (
+                      <div className="w-7 h-7 rounded-lg bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400">
+                        <Check className="w-4 h-4" />
+                      </div>
+                    ) : (
+                      <div
+                        className={`w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs transition-colors ${
+                          isActive
+                            ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-600/30'
+                            : 'bg-surface border border-surface-border text-slate-400'
+                        }`}
+                      >
+                        <Icon className="w-3.5 h-3.5" />
+                      </div>
+                    )}
+                  </div>
 
-          <button
-            type="button"
-            onClick={() => setActiveStep(3)}
-            className={`p-3.5 rounded-xl border text-left transition-all ${
-              activeStep === 3
-                ? 'bg-surface-lighter border-emerald-500 shadow-md shadow-emerald-500/10'
-                : 'bg-surface/60 border-surface-border hover:bg-surface-lighter/50'
-            }`}
-          >
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-[10px] font-mono font-bold uppercase text-slate-400">Step 3</span>
-              <Settings className={`w-4 h-4 ${activeStep === 3 ? 'text-emerald-400' : 'text-slate-500'}`} />
-            </div>
-            <div className="text-xs font-semibold text-white">WordPress &amp; Mail</div>
-            <div className="text-[11px] text-slate-400 truncate">Admin &amp; Port 587 Relay</div>
-          </button>
+                  {/* Step Labels */}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-slate-400">
+                        Step {step.id}
+                      </span>
+                    </div>
+                    <div className="text-xs font-bold text-white truncate">
+                      {step.title}
+                    </div>
+                    <div className="text-[11px] text-slate-400 truncate hidden md:block">
+                      {step.subtitle}
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </nav>
 
-          <button
-            type="button"
-            onClick={() => setActiveStep(4)}
-            className={`p-3.5 rounded-xl border text-left transition-all ${
-              activeStep === 4
-                ? 'bg-surface-lighter border-primary-500 shadow-md shadow-primary-500/10'
-                : 'bg-surface/60 border-surface-border hover:bg-surface-lighter/50'
-            }`}
-          >
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-[10px] font-mono font-bold uppercase text-slate-400">Step 4</span>
-              <Rocket className={`w-4 h-4 ${activeStep === 4 ? 'text-primary-400' : 'text-slate-500'}`} />
-            </div>
-            <div className="text-xs font-semibold text-white">Deploy &amp; Live Status</div>
-            <div className="text-[11px] text-slate-400 truncate">6-Stage Orchestration</div>
-          </button>
-        </div>
-
-        {/* Step Content */}
-        <div className="transition-all duration-200">
+        {/* Step Content View */}
+        <div className="transition-all duration-300">
           {activeStep === 1 && (
-            <Step1Oci
-              config={ociConfig}
-              sshPrivateKey={sshPrivateKey}
-              onChangeOci={setOciConfig}
-              onChangeSshKey={setSshPrivateKey}
-              onLog={addLog}
+            <Step1Website
+              config={deployConfig}
+              onChangeConfig={setDeployConfig}
+              onNext={() => setActiveStep(2)}
             />
           )}
 
           {activeStep === 2 && (
-            <Step2Cloudflare
-              domain={deployConfig.domain}
-              apiToken={cfApiToken}
-              zoneId={cfZoneId}
-              smtpRelayHost={deployConfig.smtp_relay_host}
-              onChangeDomain={d => {
-                setDeployConfig(prev => ({
-                  ...prev,
-                  domain: d,
-                  wp_admin_email: `admin@${d}`,
-                  mail_account: `admin@${d}`,
-                }));
-              }}
-              onChangeApiToken={setCfApiToken}
-              onChangeZoneId={setCfZoneId}
+            <Step2Server
+              config={ociConfig}
+              sshPrivateKey={sshPrivateKey}
+              onChangeOci={setOciConfig}
+              onChangeSshKey={setSshPrivateKey}
+              onNext={() => setActiveStep(3)}
+              onBack={() => setActiveStep(1)}
               onLog={addLog}
             />
           )}
 
           {activeStep === 3 && (
-            <Step3AppConfig
-              config={deployConfig}
-              onChangeConfig={setDeployConfig}
+            <Step3Domain
+              domain={deployConfig.domain}
+              apiToken={cfApiToken}
+              zoneId={cfZoneId}
+              smtpRelayHost={deployConfig.smtp_relay_host}
+              onChangeApiToken={setCfApiToken}
+              onChangeZoneId={setCfZoneId}
+              onNext={() => setActiveStep(4)}
+              onBack={() => setActiveStep(2)}
+              onLog={addLog}
             />
           )}
 
           {activeStep === 4 && (
-            <Step4Deploy
+            <Step4Email
+              config={deployConfig}
+              onChangeConfig={setDeployConfig}
+              onNext={() => setActiveStep(5)}
+              onBack={() => setActiveStep(3)}
+            />
+          )}
+
+          {activeStep === 5 && (
+            <Step5Launch
               deployConfig={deployConfig}
+              ociConfig={ociConfig}
               stages={stages}
               currentStage={currentStageNumber}
               isDeploying={isDeploying}
               deployError={deployError}
               onStartDeploy={handleStartDeploy}
+              onCancelDeploy={handleCancelDeploy}
               onOpenTerminal={() => setIsTerminalOpen(true)}
+              onBack={() => setActiveStep(4)}
+              onJumpToStep={step => setActiveStep(step)}
             />
-          )}
-        </div>
-
-        {/* Bottom Navigation Controls */}
-        <div className="mt-8 pt-4 border-t border-surface-border flex items-center justify-between">
-          <button
-            type="button"
-            disabled={activeStep === 1 || isDeploying}
-            onClick={() => setActiveStep(prev => Math.max(1, prev - 1))}
-            className="px-4 py-2 text-xs font-medium text-slate-300 hover:text-white bg-surface-lighter hover:bg-surface-border border border-surface-border rounded-lg flex items-center gap-1.5 transition-colors disabled:opacity-40"
-          >
-            <ChevronLeft className="w-4 h-4" />
-            <span>Previous Step</span>
-          </button>
-
-          <div className="text-xs text-slate-500 font-mono">
-            Step {activeStep} of 4
-          </div>
-
-          {activeStep < 4 ? (
-            <button
-              type="button"
-              disabled={isDeploying}
-              onClick={() => setActiveStep(prev => Math.min(4, prev + 1))}
-              className="px-5 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg flex items-center gap-1.5 transition-colors shadow-sm disabled:opacity-40"
-            >
-              <span>Next Step</span>
-              <ChevronRight className="w-4 h-4" />
-            </button>
-          ) : (
-            <button
-              type="button"
-              disabled={isDeploying}
-              onClick={handleStartDeploy}
-              className="px-6 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 rounded-lg flex items-center gap-1.5 transition-colors shadow-sm disabled:opacity-40"
-            >
-              <Rocket className="w-4 h-4" />
-              <span>Launch Stack</span>
-            </button>
           )}
         </div>
       </main>
 
-      {/* Persistent Collapsible Live Terminal */}
+      {/* Dockable Live Terminal & Status Bar */}
       <Terminal
         logs={logs}
         isOpen={isTerminalOpen}

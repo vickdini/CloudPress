@@ -45,9 +45,79 @@ fn emit_log<R: tauri::Runtime>(app: &tauri::AppHandle<R>, msg: impl Into<String>
     let _ = app.emit("deploy-log", text);
 }
 
+pub static CANCEL_DEPLOYMENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn is_deployment_cancelled() -> bool {
+    CANCEL_DEPLOYMENT.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[tauri::command]
+pub fn cancel_deployment(app_handle: tauri::AppHandle) -> Result<(), String> {
+    CANCEL_DEPLOYMENT.store(true, std::sync::atomic::Ordering::SeqCst);
+    emit_log(&app_handle, "[CANCELLED] Deployment process stopped by user.");
+    emit_stage(
+        &app_handle,
+        0,
+        "Deployment Cancelled",
+        "error",
+        "Process was stopped by user.",
+    );
+    Ok(())
+}
+
 #[tauri::command]
 pub fn generate_ssh_key() -> Result<GeneratedKeyPair, String> {
     SshManager::generate_ed25519_keypair()
+}
+
+#[tauri::command]
+pub async fn select_private_key_file() -> Result<Option<String>, String> {
+    let mut dialog = rfd::AsyncFileDialog::new()
+        .set_title("Select Oracle Cloud API Private Key (.pem)")
+        .add_filter("PEM Private Key (*.pem, *.key)", &["pem", "key"])
+        .add_filter("All Files (*.*)", &["*"]);
+
+    if let Some(download_dir) = dirs::download_dir() {
+        dialog = dialog.set_directory(&download_dir);
+    }
+
+    let file = dialog.pick_file().await;
+    Ok(file.map(|f| f.path().to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+pub fn open_external_url(url: String) -> Result<(), String> {
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err("Only HTTP/HTTPS URLs are allowed".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("cmd")
+            .args(["/c", "start", "", &url])
+            .creation_flags(0x08000000)
+            .spawn()
+            .map_err(|e| format!("Failed to open URL: {}", e))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| format!("Failed to open URL: {}", e))?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| format!("Failed to open URL: {}", e))?;
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -107,6 +177,12 @@ pub async fn deploy_full_stack(
     emit_log(&app_handle, format!("Target Domain: {}", payload.deploy.domain));
     emit_log(&app_handle, "==================================================");
 
+    CANCEL_DEPLOYMENT.store(false, std::sync::atomic::Ordering::SeqCst);
+
+    if is_deployment_cancelled() {
+        return Err("Deployment cancelled by user.".into());
+    }
+
     // -------------------------------------------------------------
     // STAGE 1: Provisioning OCI Arm64 VM & Opening Firewall Ports
     // -------------------------------------------------------------
@@ -153,6 +229,10 @@ pub async fn deploy_full_stack(
         "completed",
         &format!("Server Ready (IP: {})", vm_ip),
     );
+
+    if is_deployment_cancelled() {
+        return Err("Deployment cancelled by user.".into());
+    }
 
     // -------------------------------------------------------------
     // STAGE 2: Configuring Initial Cloudflare DNS
@@ -211,6 +291,10 @@ pub async fn deploy_full_stack(
         "completed",
         "DNS records active for root, www, mail, MX, and SPF/DMARC",
     );
+
+    if is_deployment_cancelled() {
+        return Err("Deployment cancelled by user.".into());
+    }
 
     // -------------------------------------------------------------
     // STAGE 3: Bootstrapping Server via SSH
@@ -310,6 +394,10 @@ pub async fn deploy_full_stack(
         "All configuration files uploaded and ready.",
     );
 
+    if is_deployment_cancelled() {
+        return Err("Deployment cancelled by user.".into());
+    }
+
     // -------------------------------------------------------------
     // STAGE 4: Deploying Docker Compose Stack
     // -------------------------------------------------------------
@@ -346,6 +434,10 @@ pub async fn deploy_full_stack(
         "completed",
         "Containers (Caddy, WordPress FPM, MariaDB, Docker-Mailserver) running.",
     );
+
+    if is_deployment_cancelled() {
+        return Err("Deployment cancelled by user.".into());
+    }
 
     // -------------------------------------------------------------
     // STAGE 5: Extracting OpenDKIM Keys & Pushing DNS Records
@@ -395,6 +487,10 @@ pub async fn deploy_full_stack(
         "completed",
         "DKIM DNS record configured.",
     );
+
+    if is_deployment_cancelled() {
+        return Err("Deployment cancelled by user.".into());
+    }
 
     // -------------------------------------------------------------
     // STAGE 6: Finalizing WordPress & SMTP

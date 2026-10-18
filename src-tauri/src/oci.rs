@@ -41,8 +41,8 @@ impl Default for OciConfig {
             subnet_ocid: None,
             security_list_ocid: None,
             shape: "VM.Standard.A1.Flex".into(),
-            ocpus: 4,
-            memory_in_gbs: 24,
+            ocpus: 1,
+            memory_in_gbs: 6,
             ssh_public_key: "".into(),
             auto_retry_out_of_capacity: true,
             existing_vm_ip: None,
@@ -200,6 +200,11 @@ impl OciClient {
 
         let mut attempt = 1;
         loop {
+            if crate::commands::is_deployment_cancelled() {
+                let _ = app_handle.emit("deploy-log", "[OCI] Deployment cancelled by user.");
+                return Err("Deployment cancelled by user.".into());
+            }
+
             let _ = app_handle.emit(
                 "deploy-log",
                 format!("[OCI] Launching instance request (Attempt #{})...", attempt),
@@ -238,6 +243,10 @@ impl OciClient {
                         );
                         // Countdown ticks
                         for remaining in (1..=60).rev() {
+                            if crate::commands::is_deployment_cancelled() {
+                                let _ = app_handle.emit("deploy-log", "[OCI] Cancelled during capacity retry countdown.");
+                                return Err("Deployment cancelled by user.".into());
+                            }
                             if remaining % 15 == 0 {
                                 let _ = app_handle.emit(
                                     "deploy-log",

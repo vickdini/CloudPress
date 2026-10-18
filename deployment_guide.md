@@ -18,7 +18,7 @@ graph TD
     end
 
     CF -->|Automated DNS v4 Upsert| CloudflareDNS[Cloudflare DNS: A, MX, SPF, DMARC, DKIM]
-    OCI -->|Provision / Open Ports| OracleVM[Oracle Cloud Always Free Arm64 4 OCPU / 24GB]
+    OCI -->|Provision / Open Ports| OracleVM[Oracle Cloud Always Free Arm64 1 OCPU / 6GB]
     SSH -->|Stream Logs & Deploy| OracleVM
 
     subgraph "Oracle Cloud Arm64 Instance (Ubuntu 24.04)"
@@ -56,7 +56,7 @@ graph TD
 
 1. **Stage 1: Provisioning OCI Arm64 VM & Security Ports**
    - Connects to Oracle Cloud API or verifies existing Arm64 VM IP.
-   - Evaluates compute capacity (`VM.Standard.A1.Flex`, 4 OCPUs, 24GB RAM).
+   - Evaluates compute capacity (`VM.Standard.A1.Flex`, 1 core OCPU, 6 GB memory, 1 Gbps network bandwidth).
    - Engages 60-second auto-retry countdown loop if Oracle reports capacity constraints.
    - Verifies security ingress for ports `22, 80, 443, 25, 587, 993`.
 
