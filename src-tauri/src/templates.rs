@@ -311,9 +311,9 @@ fi
 
 # 3. Ensure Docker and Docker Compose Plugin are installed
 if ! command -v docker &> /dev/null; then
-    echo "[BOOTSTRAP] Docker not found. Installing Docker engine..."
+    echo "[BOOTSTRAP] Docker not found. Installing Docker engine (this may take 1-2 minutes)..."
     curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
-    sh /tmp/get-docker.sh
+    sh /tmp/get-docker.sh 2>&1 | grep -v '^+ ' || true
     systemctl enable docker
     systemctl start docker
     echo "[BOOTSTRAP] Docker installed successfully."

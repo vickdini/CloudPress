@@ -244,7 +244,15 @@ impl SshManager {
                 line = stderr_reader.next_line() => {
                     match line {
                         Ok(Some(l)) => {
-                            let _ = app_handle.emit("deploy-log", format!("[REMOTE:ERR] {}", l));
+                            let trimmed = l.trim();
+                            // Do not flag standard shell tracing (+ sh -c ...) or SSH host notices as errors
+                            if trimmed.starts_with('+') || trimmed.starts_with("Warning:") {
+                                let _ = app_handle.emit("deploy-log", format!("[REMOTE] {}", l));
+                            } else if trimmed.to_lowercase().contains("error:") || trimmed.to_lowercase().contains("fatal:") || trimmed.to_lowercase().contains("failed") {
+                                let _ = app_handle.emit("deploy-log", format!("[REMOTE:ERR] {}", l));
+                            } else {
+                                let _ = app_handle.emit("deploy-log", format!("[REMOTE] {}", l));
+                            }
                         }
                         Ok(None) => {},
                         Err(e) => {

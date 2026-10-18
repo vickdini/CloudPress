@@ -71,7 +71,7 @@ export const Terminal: React.FC<TerminalProps> = ({
   };
 
   const getLogLineStyle = (text: string) => {
-    if (text.includes('[ERROR') || text.includes('ERR]') || text.includes('FAILED') || text.includes('Error')) {
+    if (text.includes('[REMOTE:ERR]') || text.includes('[DEPLOYMENT ERROR]') || text.includes('[GCP ERROR]') || text.includes('FAILED') || text.includes('failed:')) {
       return 'text-rose-400 bg-rose-950/20';
     }
     if (text.includes('[GCP]') || text.includes('Google Cloud')) {
