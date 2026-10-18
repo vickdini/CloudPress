@@ -61,28 +61,42 @@ pub struct OciClient {
     client: reqwest::Client,
     config: OciConfig,
     private_key: Option<RsaPrivateKey>,
+    private_key_error: Option<String>,
 }
 
 impl OciClient {
-    pub fn new(config: OciConfig) -> Result<Self, String> {
+    pub fn new(mut config: OciConfig) -> Result<Self, String> {
+        // Enforce Always Free Ampere A1 VM specs: 1 core OCPU, 6 GB memory, 1 Gbps network
+        config.shape = "VM.Standard.A1.Flex".into();
+        config.ocpus = 1;
+        config.memory_in_gbs = 6;
+
         let pem_str = if let Some(ref pem) = config.private_key_pem {
             pem.clone()
         } else if !config.private_key_path.trim().is_empty() {
             std::fs::read_to_string(config.private_key_path.trim())
-                .map_err(|e| format!("Failed to read OCI private key file: {}", e))?
+                .map_err(|e| format!("Failed to read OCI private key file ({}): {}", config.private_key_path.trim(), e))?
         } else {
             String::new()
         };
 
+        let mut private_key_error = None;
         let private_key = if !pem_str.is_empty() {
+            let normalized = pem_str.replace("\r\n", "\n");
             // Try PKCS#8 or PKCS#1
-            RsaPrivateKey::from_pkcs8_pem(&pem_str)
-                .or_else(|_| {
+            match RsaPrivateKey::from_pkcs8_pem(&normalized) {
+                Ok(k) => Some(k),
+                Err(e1) => {
                     use rsa::pkcs1::DecodeRsaPrivateKey;
-                    RsaPrivateKey::from_pkcs1_pem(&pem_str)
-                })
-                .map_err(|e| format!("Failed to parse RSA private key: {}", e))
-                .ok()
+                    match RsaPrivateKey::from_pkcs1_pem(&normalized) {
+                        Ok(k) => Some(k),
+                        Err(e2) => {
+                            private_key_error = Some(format!("Could not parse RSA key (PKCS#8: {}, PKCS#1: {})", e1, e2));
+                            None
+                        }
+                    }
+                }
+            }
         } else {
             None
         };
@@ -96,6 +110,7 @@ impl OciClient {
             client,
             config,
             private_key,
+            private_key_error,
         })
     }
 
@@ -111,7 +126,15 @@ impl OciClient {
         let private_key = self
             .private_key
             .as_ref()
-            .ok_or_else(|| "OCI RSA Private Key is missing or invalid".to_string())?;
+            .ok_or_else(|| {
+                if let Some(ref err) = self.private_key_error {
+                    format!("OCI RSA Private Key invalid: {}", err)
+                } else if self.config.private_key_path.trim().is_empty() && self.config.private_key_pem.is_none() {
+                    "OCI RSA Private Key file path is not set in Step 2".to_string()
+                } else {
+                    "OCI RSA Private Key is missing or could not be decoded".to_string()
+                }
+            })?;
 
         let key_id = format!(
             "{}/{}/{}",
@@ -231,15 +254,14 @@ impl OciClient {
                     return Ok(result);
                 }
                 Err(err) => {
-                    let is_out_of_capacity = err.to_lowercase().contains("capacity")
-                        || err.contains("500")
-                        || err.contains("TooManyRequests")
-                        || err.to_lowercase().contains("limit");
+                    let is_out_of_capacity = err.to_lowercase().contains("out of host capacity")
+                        || err.to_lowercase().contains("outofhostcapacity")
+                        || (err.contains("500") && err.to_lowercase().contains("capacity"));
 
                     if self.config.auto_retry_out_of_capacity && is_out_of_capacity {
                         let _ = app_handle.emit(
                             "deploy-log",
-                            format!("[OCI] Oracle Cloud reported out of host capacity. Auto-retry enabled. Waiting 60s before attempt #{}...", attempt + 1),
+                            format!("[OCI] Oracle Cloud reported out of host capacity (Attempt #{}). Auto-retry enabled. Waiting 60s before attempt #{}...", attempt, attempt + 1),
                         );
                         // Countdown ticks
                         for remaining in (1..=60).rev() {
@@ -257,6 +279,10 @@ impl OciClient {
                         }
                         attempt += 1;
                     } else {
+                        let _ = app_handle.emit(
+                            "deploy-log",
+                            format!("[OCI ERROR] Launch failed: {}", err),
+                        );
                         return Err(format!("OCI Launch Error: {}", err));
                     }
                 }
@@ -269,10 +295,16 @@ impl OciClient {
         let url = format!("https://{}{}", host, path);
         let date_str = Utc::now().to_rfc2822();
 
+        let compartment_id = if !self.config.compartment_ocid.trim().is_empty() {
+            self.config.compartment_ocid.trim()
+        } else {
+            self.config.tenancy_ocid.trim()
+        };
+
         let display_name = format!("cloudpress-arm64-{}", &Utc::now().timestamp());
         let payload = serde_json::json!({
             "availabilityDomain": format!("{}:EU-MILAN-1-AD-1", self.config.region),
-            "compartmentId": self.config.compartment_ocid,
+            "compartmentId": compartment_id,
             "displayName": display_name,
             "shape": self.config.shape,
             "shapeConfig": {
@@ -289,13 +321,8 @@ impl OciClient {
 
         let body_bytes = serde_json::to_vec(&payload).map_err(|e| e.to_string())?;
 
-        let auth_header = match self.sign_request("POST", path, host, &date_str, Some(&body_bytes)) {
-            Ok(sig) => sig,
-            Err(_) => {
-                // If direct REST signing fails or keys are not fully provided, return descriptive error
-                return Err("Out of host capacity in region (or credentials require valid OCI private key PEM)".into());
-            }
-        };
+        let auth_header = self.sign_request("POST", path, host, &date_str, Some(&body_bytes))
+            .map_err(|e| format!("Request signing failed: {}", e))?;
 
         let mut hasher = Sha256::new();
         hasher.update(&body_bytes);

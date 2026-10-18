@@ -266,6 +266,29 @@ export const Step2Server: React.FC<Step2ServerProps> = ({
         ) : (
           /* Automated Provisioning Form */
           <div className="space-y-6">
+            {/* Server Spec Summary Badge */}
+            <div className="p-4 rounded-xl bg-indigo-950/30 border border-indigo-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-lg bg-indigo-500/10 border border-indigo-500/30 flex items-center justify-center text-indigo-400 shrink-0">
+                  <Cpu className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="text-xs font-bold text-white flex items-center gap-2">
+                    <span>Ampere A1 Flex Instance</span>
+                    <span className="text-[10px] text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20 font-medium">
+                      Always Free ($0.00/mo)
+                    </span>
+                  </div>
+                  <div className="text-xs text-indigo-300 font-medium mt-0.5">
+                    1 core OCPU &bull; 6 GB memory &bull; 1 Gbps network bandwidth
+                  </div>
+                </div>
+              </div>
+              <div className="text-xs font-mono text-slate-400 sm:text-right">
+                VM.Standard.A1.Flex
+              </div>
+            </div>
+
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-surface-border/60 pb-4">
               <div>
                 <h3 className="text-sm font-bold text-white flex items-center gap-2">

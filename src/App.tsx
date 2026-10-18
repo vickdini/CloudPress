@@ -220,7 +220,12 @@ export const App: React.FC = () => {
   // Profile Save / Load
   const handleSaveProfile = async () => {
     const profile = {
-      ociConfig,
+      ociConfig: {
+        ...ociConfig,
+        shape: 'VM.Standard.A1.Flex',
+        ocpus: 1,
+        memory_in_gbs: 6,
+      },
       sshPrivateKey,
       cfApiToken,
       cfZoneId,
@@ -239,13 +244,20 @@ export const App: React.FC = () => {
     try {
       const dataStr = await invoke<string>('load_profile');
       const data = JSON.parse(dataStr);
-      if (data.ociConfig) setOciConfig(data.ociConfig);
+      if (data.ociConfig) {
+        setOciConfig({
+          ...data.ociConfig,
+          shape: 'VM.Standard.A1.Flex',
+          ocpus: 1,
+          memory_in_gbs: 6,
+        });
+      }
       if (data.sshPrivateKey) setSshPrivateKey(data.sshPrivateKey);
       if (data.cfApiToken) setCfApiToken(data.cfApiToken);
       if (data.cfZoneId) setCfZoneId(data.cfZoneId);
       if (data.deployConfig) setDeployConfig(data.deployConfig);
       addLog('[Profile Loaded] Successfully loaded settings from ~/.cloudpress/profile.json');
-      alert('Saved profile loaded successfully!');
+      alert('Saved profile loaded successfully! (VM set to 1 OCPU, 6 GB memory)');
     } catch (err) {
       alert(`Failed to load profile: ${err}`);
     }
@@ -269,7 +281,12 @@ export const App: React.FC = () => {
       setStages(INITIAL_STAGES.map(s => ({ ...s, status: 'idle' })));
 
       const payload: FullDeployPayload = {
-        oci: ociConfig,
+        oci: {
+          ...ociConfig,
+          shape: 'VM.Standard.A1.Flex',
+          ocpus: 1,
+          memory_in_gbs: 6,
+        },
         cloudflare_api_token: cfApiToken,
         cloudflare_zone_id: cfZoneId,
         deploy: deployConfig,
