@@ -46,7 +46,7 @@ graph TD
 | :--- | :--- | :--- |
 | [`lib.rs`](file:///d:/free-wp/src-tauri/src/lib.rs) | Tauri v2 application builder, logging plugin, IPC handler dispatch | `run()`, plugin registration |
 | [`commands.rs`](file:///d:/free-wp/src-tauri/src/commands.rs) | Tauri commands exposed to the frontend | `deploy_full_stack()`, `generate_ssh_key()`, `fetch_zone_id()`, `test_ssh_connection()`, `save_profile()`, `load_profile()` |
-| [`gcp.rs`](file:///d:/free-wp/src-tauri/src/gcp.rs) | Google Cloud Compute Engine `e2-micro` provisioning & API/gcloud integration | `provision_vm()`, `try_provision_via_gcloud()`, `try_provision_via_service_account()`, `GcpConfig` |
+| [`gcp.rs`](file:///d:/free-wp/src-tauri/src/gcp.rs) | Google Cloud Compute Engine `e2-micro` provisioning, OAuth 2.0 PKCE browser sign-in & Service Account API | `provision_vm()`, `start_google_oauth_flow()`, `list_google_projects()`, `ensure_firewall_rules()`, `GcpConfig` |
 | [`cloudflare.rs`](file:///d:/free-wp/src-tauri/src/cloudflare.rs) | Cloudflare API v4 integration | `fetch_zone_id()`, `upsert_dns_record()`, `configure_initial_dns()`, `push_dkim_record()`, `parse_opendkim_key()` |
 | [`oci.rs`](file:///d:/free-wp/src-tauri/src/oci.rs) | Oracle Cloud VM provisioning & out-of-capacity auto-retry | `provision_arm64_instance()`, `sign_request()`, `open_security_list_ports()`, `OciConfig` |
 | [`ssh.rs`](file:///d:/free-wp/src-tauri/src/ssh.rs) | Ed25519 key generation & real-time streaming remote execution | `generate_ed25519_keypair()`, `test_connection()`, `upload_file_content()`, `run_bootstrap_stream()` |
@@ -56,11 +56,13 @@ graph TD
 
 ## 3. Deployment Flow (6 Automated Stages)
 
-1. **Stage 1: Provisioning OCI Arm64 VM & Security Ports**
-   - Connects to Oracle Cloud API or verifies existing Arm64 VM IP.
-   - Evaluates compute capacity (`VM.Standard.A1.Flex`, 1 core OCPU, 6 GB memory, 1 Gbps network bandwidth).
-   - Engages 60-second auto-retry countdown loop if Oracle reports capacity constraints.
-   - Verifies security ingress for ports `22, 80, 443, 25, 587, 993`.
+1. **Stage 1: Provisioning Google Cloud e2-micro VM & Firewall**
+   - Connects to Google Cloud via 1-click **Google OAuth 2.0 PKCE** in the browser or Service Account JSON key.
+   - Automatically retrieves and lists your Google Cloud projects.
+   - Provisions an Always Free `e2-micro` instance (2 vCPUs burstable, 1 GB memory, 30 GB standard persistent disk, Ubuntu 24.04 LTS) in `us-central1` (Iowa), `us-west1` (Oregon), or `us-east1` (South Carolina).
+   - Automatically injects the high-security Ed25519 SSH public key into VM metadata (`ubuntu`).
+   - Automatically creates Google Cloud firewall rule `cloudpress-allow-web-mail` opening ports `80, 443, 22, 25, 587, 993`.
+   - Polls until the VM is `RUNNING` and captures the external Public IPv4 address.
 
 2. **Stage 2: Configuring Initial Cloudflare DNS**
    - Queries Cloudflare API for the Zone ID matching your apex domain.

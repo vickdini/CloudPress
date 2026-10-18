@@ -18,6 +18,7 @@ import {
   Edit2,
   Sparkles,
   XCircle,
+  RefreshCw,
 } from 'lucide-react';
 
 interface Step5LaunchProps {
@@ -28,6 +29,7 @@ interface Step5LaunchProps {
   currentStage: number;
   isDeploying: boolean;
   deployError: string | null;
+  isCheckingDns?: boolean;
   onStartDeploy: () => void;
   onCancelDeploy: () => void;
   onOpenTerminal: () => void;
@@ -70,6 +72,7 @@ export const Step5Launch: React.FC<Step5LaunchProps> = ({
   currentStage,
   isDeploying,
   deployError,
+  isCheckingDns,
   onStartDeploy,
   onCancelDeploy,
   onOpenTerminal,
@@ -338,12 +341,16 @@ SMTP (Outgoing): mail.${deployConfig.domain}:587 (STARTTLS)
                 <div className="text-base font-bold text-white">
                   {gcpConfig?.existing_vm_ip
                     ? `Google Cloud e2-micro (${gcpConfig.existing_vm_ip})`
+                    : gcpConfig?.oauth_user_email
+                    ? `Google Cloud e2-micro (${gcpConfig.project_id} • ${gcpConfig.region})`
                     : ociConfig?.existing_vm_ip
                     ? `Existing Server (${ociConfig.existing_vm_ip})`
                     : `Google Cloud e2-micro (${gcpConfig?.region || 'us-central1'})`}
                 </div>
                 <div className="text-slate-300">
-                  Always Free: e2-micro (2 vCPUs burstable, 1 GB RAM + 3 GB CloudPress Swap, 30 GB standard disk) ($0.00 / mo)
+                  {gcpConfig?.oauth_user_email
+                    ? `Connected via Google Account (${gcpConfig.oauth_user_email}) • Automated launch & firewalls`
+                    : 'Always Free: e2-micro (2 vCPUs burstable, 1 GB RAM + 2 GB CloudPress Swap, 30 GB standard disk) ($0.00 / mo)'}
                 </div>
                 <div className="text-slate-400">
                   Security Key: <span className="text-emerald-400 font-medium">Secured with Ed25519 (user: ubuntu)</span>
@@ -420,10 +427,20 @@ SMTP (Outgoing): mail.${deployConfig.domain}:587 (STARTTLS)
             <button
               type="button"
               onClick={onStartDeploy}
-              className="px-8 py-4 rounded-xl text-base font-bold text-indigo-950 bg-white hover:bg-slate-100 shadow-2xl transition-all active:scale-95 inline-flex items-center gap-2.5"
+              disabled={isDeploying || isCheckingDns}
+              className="px-8 py-4 rounded-xl text-base font-bold text-indigo-950 bg-white hover:bg-slate-100 shadow-2xl transition-all active:scale-95 inline-flex items-center gap-2.5 disabled:opacity-60"
             >
-              <Rocket className="w-5 h-5 text-indigo-600" />
-              <span>Launch Free WordPress Stack Now</span>
+              {isCheckingDns ? (
+                <>
+                  <RefreshCw className="w-5 h-5 text-indigo-600 animate-spin" />
+                  <span>Checking Cloudflare DNS...</span>
+                </>
+              ) : (
+                <>
+                  <Rocket className="w-5 h-5 text-indigo-600" />
+                  <span>Launch Free WordPress Stack Now</span>
+                </>
+              )}
             </button>
           </div>
         </div>

@@ -14,6 +14,7 @@ import type {
   StageProgress,
   LogMessage,
   GeneratedKeyPair,
+  CloudflareRecord,
 } from './types';
 import {
   Globe,
@@ -22,6 +23,9 @@ import {
   Mail,
   Rocket,
   Check,
+  RefreshCw,
+  AlertTriangle,
+  X,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -124,8 +128,15 @@ export const App: React.FC = () => {
     machine_type: 'e2-micro',
     disk_size_gb: 30,
     service_account_json_path: '',
+    service_account_json_content: '',
     ssh_public_key: '',
     existing_vm_ip: '',
+    auth_mode: 'oauth',
+    oauth_access_token: '',
+    oauth_refresh_token: '',
+    oauth_user_email: '',
+    oauth_user_name: '',
+    oauth_user_picture: '',
   });
 
   const [ociConfig, setOciConfig] = useState<OciConfig>({
@@ -188,6 +199,7 @@ export const App: React.FC = () => {
     const initSshKey = async () => {
       try {
         const res = await invoke<GeneratedKeyPair>('generate_ssh_key');
+        setGcpConfig(prev => ({ ...prev, ssh_public_key: res.public_key }));
         setOciConfig(prev => ({ ...prev, ssh_public_key: res.public_key }));
         setSshPrivateKey(res.private_key);
         addLog('[Security Key] Automatically initialized high-security Ed25519 digital key.');
@@ -281,11 +293,49 @@ export const App: React.FC = () => {
     }
   };
 
+  const [existingDnsModal, setExistingDnsModal] = useState<{
+    records: CloudflareRecord[];
+    domain: string;
+  } | null>(null);
+  const [isCheckingDns, setIsCheckingDns] = useState(false);
+
   // Launch Deployment
-  const handleStartDeploy = async () => {
+  const handleStartDeploy = async (forceOverwrite?: boolean) => {
+    // If user has not yet confirmed the prompt, check Cloudflare DNS first
+    if (forceOverwrite === undefined && cfApiToken.trim()) {
+      try {
+        setIsCheckingDns(true);
+        const cleanDomain = deployConfig.domain.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '');
+        let zoneId = cfZoneId.trim();
+        if (!zoneId) {
+          zoneId = await invoke<string>('fetch_zone_id', {
+            apiToken: cfApiToken.trim(),
+            domain: cleanDomain,
+          });
+        }
+        if (zoneId) {
+          const records = await invoke<CloudflareRecord[]>('check_existing_dns', {
+            apiToken: cfApiToken.trim(),
+            zoneId,
+            domain: cleanDomain,
+          });
+          if (records && records.length > 0) {
+            setExistingDnsModal({ records, domain: cleanDomain });
+            setIsCheckingDns(false);
+            return;
+          }
+        }
+      } catch (e) {
+        console.warn('Could not pre-check existing Cloudflare DNS records:', e);
+      } finally {
+        setIsCheckingDns(false);
+      }
+    }
+
     try {
       setIsDeploying(true);
       setDeployError(null);
+      setExistingDnsModal(null);
       setActiveStep(5); // Switch view to Launch status screen
       setStages(INITIAL_STAGES.map(s => ({ ...s, status: 'idle' })));
 
@@ -295,6 +345,7 @@ export const App: React.FC = () => {
         cloudflare_zone_id: cfZoneId,
         deploy: deployConfig,
         ssh_private_key: sshPrivateKey,
+        overwrite_dns: forceOverwrite !== undefined ? forceOverwrite : true,
       };
 
       const result = await invoke<string>('deploy_full_stack', { payload });
@@ -447,7 +498,8 @@ export const App: React.FC = () => {
               currentStage={currentStageNumber}
               isDeploying={isDeploying}
               deployError={deployError}
-              onStartDeploy={handleStartDeploy}
+              isCheckingDns={isCheckingDns}
+              onStartDeploy={() => handleStartDeploy()}
               onCancelDeploy={handleCancelDeploy}
               onOpenTerminal={() => setIsTerminalOpen(true)}
               onBack={() => setActiveStep(4)}
@@ -456,6 +508,86 @@ export const App: React.FC = () => {
           )}
         </div>
       </main>
+
+      {/* Existing DNS Records Confirmation Modal */}
+      {existingDnsModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="bg-surface border border-surface-border rounded-2xl max-w-xl w-full p-6 shadow-2xl space-y-5 animate-in zoom-in-95 duration-200">
+            <div className="flex items-start justify-between gap-3 border-b border-surface-border pb-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 shrink-0">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">
+                    Existing DNS Records Detected
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Cloudflare already has active records for <span className="font-semibold text-amber-300 font-mono">{existingDnsModal.domain}</span>
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setExistingDnsModal(null)}
+                className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-surface-lighter transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-xs text-slate-300">
+                The following records were found in your Cloudflare DNS zone:
+              </p>
+              <div className="max-h-48 overflow-y-auto rounded-xl border border-surface-border bg-surface-lighter/60 p-2 space-y-1.5 font-mono text-xs">
+                {existingDnsModal.records.map((rec, i) => (
+                  <div key={rec.id || i} className="flex items-center justify-between gap-2 p-1.5 rounded-lg bg-surface/50 border border-surface-border/50">
+                    <div className="flex items-center gap-2 truncate">
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 shrink-0">
+                        {rec.type}
+                      </span>
+                      <span className="text-slate-200 truncate">{rec.name}</span>
+                    </div>
+                    <span className="text-slate-400 truncate max-w-[200px]" title={rec.content}>
+                      {rec.content}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-300 leading-relaxed">
+              Do you want CloudPress to automatically update these DNS records with your new WordPress server IP, or preserve your existing DNS settings?
+            </p>
+
+            <div className="flex flex-col sm:flex-row items-center justify-end gap-2.5 pt-2 border-t border-surface-border">
+              <button
+                type="button"
+                onClick={() => setExistingDnsModal(null)}
+                className="w-full sm:w-auto px-4 py-2 text-xs font-semibold text-slate-400 hover:text-white hover:bg-surface-lighter border border-transparent rounded-xl transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => handleStartDeploy(false)}
+                className="w-full sm:w-auto px-4 py-2 text-xs font-semibold text-slate-200 hover:text-white bg-surface-lighter hover:bg-surface-border border border-surface-border rounded-xl transition-all shadow-sm"
+              >
+                Keep Existing Records
+              </button>
+              <button
+                type="button"
+                onClick={() => handleStartDeploy(true)}
+                className="w-full sm:w-auto px-5 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-500 shadow-md shadow-indigo-600/30 rounded-xl transition-all flex items-center justify-center gap-2"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Yes, Update DNS Records</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Dockable Live Terminal & Status Bar */}
       <Terminal

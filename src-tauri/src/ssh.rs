@@ -68,12 +68,35 @@ impl SshManager {
         file.write_all(normalized.as_bytes())
             .map_err(|e| format!("Failed to write private key: {}", e))?;
 
+        drop(file);
+
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = file.metadata().map_err(|e| e.to_string())?.permissions();
+            let mut perms = std::fs::metadata(&key_path)
+                .map_err(|e| e.to_string())?
+                .permissions();
             perms.set_mode(0o600);
             std::fs::set_permissions(&key_path, perms).map_err(|e| e.to_string())?;
+        }
+
+        #[cfg(windows)]
+        {
+            let username = std::env::var("USERNAME").unwrap_or_else(|_| "Users".to_string());
+            let path_str = key_path.to_string_lossy().to_string();
+
+            // 1. Remove inheritance and wipe all other user/group permissions
+            let _ = std::process::Command::new("icacls")
+                .arg(&path_str)
+                .arg("/inheritance:r")
+                .output();
+
+            // 2. Explicitly grant only the current user Read & Write permissions
+            let _ = std::process::Command::new("icacls")
+                .arg(&path_str)
+                .arg("/grant:r")
+                .arg(format!("{}:(R,W)", username))
+                .output();
         }
 
         Ok(key_path)

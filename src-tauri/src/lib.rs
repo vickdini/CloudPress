@@ -22,6 +22,8 @@ pub fn run() {
             commands::generate_ssh_key,
             commands::select_private_key_file,
             commands::select_service_account_file,
+            commands::start_google_oauth,
+            commands::list_google_projects,
             commands::open_external_url,
             commands::cancel_deployment,
             commands::fetch_zone_id,
@@ -29,6 +31,8 @@ pub fn run() {
             commands::save_profile,
             commands::load_profile,
             commands::deploy_full_stack,
+            commands::check_existing_dns,
+            commands::toggle_fullscreen,
         ])
         .run(tauri::generate_context!())
         .expect("error while building tauri application");

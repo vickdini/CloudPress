@@ -5,8 +5,32 @@ export interface GcpConfig {
   machine_type: string; // 'e2-micro'
   disk_size_gb: number; // 30
   service_account_json_path: string;
+  service_account_json_content?: string;
   ssh_public_key: string;
   existing_vm_ip?: string;
+  auth_mode?: 'oauth' | 'service_account' | 'existing';
+  oauth_access_token?: string;
+  oauth_refresh_token?: string;
+  oauth_user_email?: string;
+  oauth_user_name?: string;
+  oauth_user_picture?: string;
+  custom_oauth_client_id?: string;
+  custom_oauth_client_secret?: string;
+}
+
+export interface GoogleAuthResult {
+  access_token: string;
+  refresh_token?: string;
+  expires_in?: number;
+  user_email: string;
+  user_name?: string;
+  user_picture?: string;
+}
+
+export interface GoogleProject {
+  project_id: string;
+  name: string;
+  project_number?: string;
 }
 
 export interface OciConfig {
@@ -45,6 +69,16 @@ export interface DeployConfig {
   mysql_root_password: string;
 }
 
+export interface CloudflareRecord {
+  id?: string;
+  type: string;
+  name: string;
+  content: string;
+  proxied?: boolean;
+  ttl?: number;
+  priority?: number;
+}
+
 export interface FullDeployPayload {
   gcp?: GcpConfig;
   oci?: OciConfig;
@@ -52,6 +86,7 @@ export interface FullDeployPayload {
   cloudflare_zone_id: string;
   deploy: DeployConfig;
   ssh_private_key: string;
+  overwrite_dns?: boolean;
 }
 
 export interface GeneratedKeyPair {

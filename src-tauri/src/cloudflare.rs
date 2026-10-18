@@ -98,7 +98,86 @@ impl CloudflareClient {
         Err(format!("Zone for domain '{}' not found in your Cloudflare account.", clean_domain))
     }
 
-    /// Upsert a single DNS record (search by name + type, update if exists, insert if not)
+    /// Checks for existing relevant DNS records in the Cloudflare zone (@, www, mail, MX, SPF, DMARC)
+    pub async fn check_existing_dns(
+        &self,
+        zone_id: &str,
+        domain: &str,
+    ) -> Result<Vec<CloudflareRecord>, String> {
+        let clean_zone = zone_id.trim();
+        let clean_domain = domain
+            .trim()
+            .trim_start_matches("https://")
+            .trim_start_matches("http://")
+            .trim_end_matches('/')
+            .to_lowercase();
+
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/zones/{}/dns_records?per_page=100",
+            clean_zone
+        );
+
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to reach Cloudflare API: {}", e))?;
+
+        if !resp.status().is_success() {
+            let err = resp.text().await.unwrap_or_default();
+            return Err(format!("Cloudflare API error: {}", err));
+        }
+
+        let cf_res: CfApiResponse<Vec<CloudflareRecord>> = resp
+            .json()
+            .await
+            .map_err(|e| format!("Invalid JSON from Cloudflare: {}", e))?;
+
+        let all_records = cf_res.result.unwrap_or_default();
+        let www = format!("www.{}", clean_domain);
+        let mail = format!("mail.{}", clean_domain);
+        let dmarc = format!("_dmarc.{}", clean_domain);
+        let dkim = format!("mail._domainkey.{}", clean_domain);
+
+        let relevant: Vec<CloudflareRecord> = all_records
+            .into_iter()
+            .filter(|r| {
+                let rname = r.name.to_lowercase();
+                rname == clean_domain
+                    || rname == www
+                    || rname == mail
+                    || rname == dmarc
+                    || rname == dkim
+            })
+            .collect();
+
+        Ok(relevant)
+    }
+
+    /// Deletes a DNS record by ID
+    pub async fn delete_record(&self, zone_id: &str, record_id: &str) -> Result<(), String> {
+        let url = format!(
+            "https://api.cloudflare.com/client/v4/zones/{}/dns_records/{}",
+            zone_id.trim(),
+            record_id.trim()
+        );
+        let resp = self
+            .client
+            .delete(&url)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if resp.status().is_success() || resp.status().as_u16() == 404 {
+            Ok(())
+        } else {
+            let err = resp.text().await.unwrap_or_default();
+            Err(format!("Failed to delete conflicting DNS record: {}", err))
+        }
+    }
+
+    /// Upsert a single DNS record (handles CNAME/AAAA conflicts, duplicate cleanup, and overwrite preference)
     pub async fn upsert_dns_record(
         &self,
         zone_id: &str,
@@ -107,15 +186,16 @@ impl CloudflareClient {
         content: &str,
         proxied: bool,
         priority: Option<u16>,
+        overwrite: bool,
     ) -> Result<String, String> {
         let clean_zone = zone_id.trim();
         let clean_name = name.trim();
         let clean_content = content.trim();
 
-        // 1. Search for existing record
+        // 1. Query all DNS records for this specific hostname
         let search_url = format!(
-            "https://api.cloudflare.com/client/v4/zones/{}/dns_records?type={}&name={}",
-            clean_zone, record_type, clean_name
+            "https://api.cloudflare.com/client/v4/zones/{}/dns_records?name={}",
+            clean_zone, clean_name
         );
 
         let list_resp = self
@@ -129,6 +209,8 @@ impl CloudflareClient {
             .json()
             .await
             .map_err(|e| format!("Failed to parse DNS list response: {}", e))?;
+
+        let existing_records = list_data.result.unwrap_or_default();
 
         let mut payload = serde_json::json!({
             "type": record_type,
@@ -145,44 +227,136 @@ impl CloudflareClient {
             payload["priority"] = serde_json::Value::Number(prio.into());
         }
 
-        if let Some(existing_records) = list_data.result {
-            if let Some(first_match) = existing_records.first() {
-                if let Some(record_id) = &first_match.id {
-                    // Update existing
+        // If overwrite is false, preserve existing record without errors
+        if !overwrite {
+            for rec in &existing_records {
+                if rec.record_type.eq_ignore_ascii_case(record_type) {
+                    return Ok(format!(
+                        "Preserved existing {} record for {} ({}) without modifying.",
+                        record_type, clean_name, rec.content
+                    ));
+                }
+            }
+        }
+
+        // 2. Perform safe update/deletion of conflicting records
+        if record_type == "A" {
+            // Delete any conflicting CNAME or AAAA records that would block creating/updating an A record
+            for rec in &existing_records {
+                if let Some(ref rid) = rec.id {
+                    if rec.record_type.eq_ignore_ascii_case("CNAME")
+                        || rec.record_type.eq_ignore_ascii_case("AAAA")
+                    {
+                        let _ = self.delete_record(clean_zone, rid).await;
+                    }
+                }
+            }
+
+            // Find existing A record(s)
+            let mut a_records: Vec<&CloudflareRecord> = existing_records
+                .iter()
+                .filter(|r| r.record_type.eq_ignore_ascii_case("A"))
+                .collect();
+
+            if let Some(first_a) = a_records.pop() {
+                if let Some(ref rid) = first_a.id {
                     let update_url = format!(
                         "https://api.cloudflare.com/client/v4/zones/{}/dns_records/{}",
-                        clean_zone, record_id
+                        clean_zone, rid
                     );
-
                     let put_resp = self
                         .client
                         .put(&update_url)
                         .json(&payload)
                         .send()
                         .await
-                        .map_err(|e| format!("Error updating DNS record: {}", e))?;
+                        .map_err(|e| format!("Error updating A record: {}", e))?;
 
-                    let put_data: CfApiResponse<CloudflareRecord> = put_resp
-                        .json()
+                    // Remove redundant duplicate A records for the exact same hostname
+                    for dup in a_records {
+                        if let Some(ref dup_id) = dup.id {
+                            let _ = self.delete_record(clean_zone, dup_id).await;
+                        }
+                    }
+
+                    if put_resp.status().is_success() {
+                        return Ok(format!("Updated A record for {} -> {}", clean_name, clean_content));
+                    }
+                }
+            }
+        } else if record_type == "MX" {
+            let mut mx_records: Vec<&CloudflareRecord> = existing_records
+                .iter()
+                .filter(|r| r.record_type.eq_ignore_ascii_case("MX"))
+                .collect();
+
+            if let Some(first_mx) = mx_records.pop() {
+                if let Some(ref rid) = first_mx.id {
+                    let update_url = format!(
+                        "https://api.cloudflare.com/client/v4/zones/{}/dns_records/{}",
+                        clean_zone, rid
+                    );
+                    let put_resp = self
+                        .client
+                        .put(&update_url)
+                        .json(&payload)
+                        .send()
                         .await
-                        .map_err(|e| format!("Failed to parse DNS update response: {}", e))?;
+                        .map_err(|e| format!("Error updating MX record: {}", e))?;
 
-                    if put_data.success {
-                        return Ok(format!("Updated {} record for {}", record_type, clean_name));
-                    } else {
-                        let err_msg = put_data
-                            .errors
-                            .into_iter()
-                            .map(|e| e.message)
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        return Err(format!("Failed to update {} record: {}", record_type, err_msg));
+                    for dup in mx_records {
+                        if let Some(ref dup_id) = dup.id {
+                            let _ = self.delete_record(clean_zone, dup_id).await;
+                        }
+                    }
+
+                    if put_resp.status().is_success() {
+                        return Ok(format!("Updated MX record for {} -> {}", clean_name, clean_content));
+                    }
+                }
+            }
+        } else if record_type == "TXT" {
+            let is_spf = clean_content.starts_with("v=spf1");
+            let is_dmarc = clean_content.starts_with("v=DMARC1");
+            let is_dkim = clean_name.contains("_domainkey");
+
+            let target_txt = existing_records.iter().find(|r| {
+                if !r.record_type.eq_ignore_ascii_case("TXT") {
+                    return false;
+                }
+                if is_spf {
+                    r.content.starts_with("v=spf1")
+                } else if is_dmarc {
+                    r.content.starts_with("v=DMARC1")
+                } else if is_dkim {
+                    true
+                } else {
+                    false
+                }
+            });
+
+            if let Some(txt_match) = target_txt {
+                if let Some(ref rid) = txt_match.id {
+                    let update_url = format!(
+                        "https://api.cloudflare.com/client/v4/zones/{}/dns_records/{}",
+                        clean_zone, rid
+                    );
+                    let put_resp = self
+                        .client
+                        .put(&update_url)
+                        .json(&payload)
+                        .send()
+                        .await
+                        .map_err(|e| format!("Error updating TXT record: {}", e))?;
+
+                    if put_resp.status().is_success() {
+                        return Ok(format!("Updated TXT record for {}", clean_name));
                     }
                 }
             }
         }
 
-        // Create new record
+        // 3. Create fresh record if none was updated
         let create_url = format!(
             "https://api.cloudflare.com/client/v4/zones/{}/dns_records",
             clean_zone
@@ -221,33 +395,34 @@ impl CloudflareClient {
         domain: &str,
         vm_ip: &str,
         smtp_relay_host: &str,
+        overwrite: bool,
     ) -> Result<Vec<String>, String> {
         let mut results = Vec::new();
         let clean_domain = domain.trim();
 
         // 1. A record: @ -> VM_IP (proxied: false initially for Let's Encrypt TLS-ALPN-01 & HTTP-01 challenges)
         results.push(
-            self.upsert_dns_record(zone_id, "A", clean_domain, vm_ip, false, None)
+            self.upsert_dns_record(zone_id, "A", clean_domain, vm_ip, false, None, overwrite)
                 .await?,
         );
 
         // 2. A record: www -> VM_IP (proxied: false)
         let www_name = format!("www.{}", clean_domain);
         results.push(
-            self.upsert_dns_record(zone_id, "A", &www_name, vm_ip, false, None)
+            self.upsert_dns_record(zone_id, "A", &www_name, vm_ip, false, None, overwrite)
                 .await?,
         );
 
         // 3. A record: mail -> VM_IP (proxied: false - mail server MUST not be proxied by Cloudflare HTTP proxy)
         let mail_name = format!("mail.{}", clean_domain);
         results.push(
-            self.upsert_dns_record(zone_id, "A", &mail_name, vm_ip, false, None)
+            self.upsert_dns_record(zone_id, "A", &mail_name, vm_ip, false, None, overwrite)
                 .await?,
         );
 
         // 4. MX record: @ -> mail.{domain} with Priority 10
         results.push(
-            self.upsert_dns_record(zone_id, "MX", clean_domain, &mail_name, false, Some(10))
+            self.upsert_dns_record(zone_id, "MX", clean_domain, &mail_name, false, Some(10), overwrite)
                 .await?,
         );
 
@@ -262,7 +437,7 @@ impl CloudflareClient {
             "v=spf1 mx ~all".to_string()
         };
         results.push(
-            self.upsert_dns_record(zone_id, "TXT", clean_domain, &spf_content, false, None)
+            self.upsert_dns_record(zone_id, "TXT", clean_domain, &spf_content, false, None, overwrite)
                 .await?,
         );
 
@@ -273,7 +448,7 @@ impl CloudflareClient {
             clean_domain
         );
         results.push(
-            self.upsert_dns_record(zone_id, "TXT", &dmarc_name, &dmarc_content, false, None)
+            self.upsert_dns_record(zone_id, "TXT", &dmarc_name, &dmarc_content, false, None, overwrite)
                 .await?,
         );
 
@@ -286,6 +461,7 @@ impl CloudflareClient {
         zone_id: &str,
         domain: &str,
         raw_dkim_text: &str,
+        overwrite: bool,
     ) -> Result<String, String> {
         let clean_domain = domain.trim();
         let (record_name, dkim_content) = parse_opendkim_key(clean_domain, raw_dkim_text)?;
@@ -297,6 +473,7 @@ impl CloudflareClient {
             &dkim_content,
             false,
             None,
+            overwrite,
         )
         .await
     }
