@@ -1,5 +1,6 @@
 pub mod cloudflare;
 pub mod commands;
+pub mod gcp;
 pub mod oci;
 pub mod ssh;
 pub mod templates;
@@ -20,6 +21,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::generate_ssh_key,
             commands::select_private_key_file,
+            commands::select_service_account_file,
             commands::open_external_url,
             commands::cancel_deployment,
             commands::fetch_zone_id,

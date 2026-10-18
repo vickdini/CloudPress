@@ -50,7 +50,7 @@ impl SshManager {
             .map_err(|e| format!("Failed to encode private key: {}", e))?;
 
         Ok(GeneratedKeyPair {
-            public_key: format!("{} cloudpress-arm64", openssh_pub),
+            public_key: format!("{} ubuntu", openssh_pub),
             private_key: openssh_priv.to_string(),
         })
     }

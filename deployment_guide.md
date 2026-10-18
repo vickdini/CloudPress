@@ -1,6 +1,6 @@
 # CloudPress: Zero-Cost Cloud WordPress & Email Deployer
 
-**CloudPress** is a cross-platform desktop application powered by **Tauri v2**, **Rust**, **React 19**, and **Tailwind CSS**. It automates the zero-cost deployment of WordPress and a containerized email server onto an **Oracle Cloud Infrastructure (OCI) Always Free Arm64 Ampere A1** instance (`VM.Standard.A1.Flex`), wired up automatically via the **Cloudflare API v4**.
+**CloudPress** is a cross-platform desktop application powered by **Tauri v2**, **Rust**, **React 19**, and **Tailwind CSS**. It automates the zero-cost deployment of WordPress and a containerized email server onto a **Google Cloud Platform (GCP) Always Free e2-micro** instance (`us-central1`, `us-west1`, `us-east1` with 30 GB disk) or Oracle Cloud Arm64, wired up automatically via the **Cloudflare API v4**.
 
 ---
 
@@ -12,19 +12,20 @@ graph TD
     
     subgraph Rust Backend Modules
         Core --> CF[cloudflare.rs: Cloudflare API v4]
-        Core --> OCI[oci.rs: Oracle Cloud REST & Capacity Loop]
+        Core --> GCP[gcp.rs: Google Cloud Compute Engine e2-micro]
+        Core --> OCI[oci.rs: Oracle Cloud REST]
         Core --> SSH[ssh.rs: Ed25519 Keygen & Streaming SSH]
         Core --> TPL[templates.rs: Compose, Caddyfile, Scripts]
     end
 
     CF -->|Automated DNS v4 Upsert| CloudflareDNS[Cloudflare DNS: A, MX, SPF, DMARC, DKIM]
-    OCI -->|Provision / Open Ports| OracleVM[Oracle Cloud Always Free Arm64 1 OCPU / 6GB]
-    SSH -->|Stream Logs & Deploy| OracleVM
+    GCP -->|Provision / Connect| CloudVM[Google Cloud Always Free e2-micro 30GB Disk]
+    SSH -->|Stream Logs & Deploy| CloudVM
 
-    subgraph "Oracle Cloud Arm64 Instance (Ubuntu 24.04)"
+    subgraph "Google Cloud e2-micro Instance (Ubuntu 24.04)"
         Caddy[Caddy 2: Automatic Let's Encrypt SSL]
         WP[WordPress FPM-Alpine]
-        DB[(MariaDB 11: 512MB Buffer)]
+        DB[(MariaDB 11: 256MB Buffer)]
         Mail[Docker-Mailserver: Ports 25, 587, 993]
         WPCLI[wp-cli utility + SMTP MU-Plugin]
         
@@ -45,6 +46,7 @@ graph TD
 | :--- | :--- | :--- |
 | [`lib.rs`](file:///d:/free-wp/src-tauri/src/lib.rs) | Tauri v2 application builder, logging plugin, IPC handler dispatch | `run()`, plugin registration |
 | [`commands.rs`](file:///d:/free-wp/src-tauri/src/commands.rs) | Tauri commands exposed to the frontend | `deploy_full_stack()`, `generate_ssh_key()`, `fetch_zone_id()`, `test_ssh_connection()`, `save_profile()`, `load_profile()` |
+| [`gcp.rs`](file:///d:/free-wp/src-tauri/src/gcp.rs) | Google Cloud Compute Engine `e2-micro` provisioning & API/gcloud integration | `provision_vm()`, `try_provision_via_gcloud()`, `try_provision_via_service_account()`, `GcpConfig` |
 | [`cloudflare.rs`](file:///d:/free-wp/src-tauri/src/cloudflare.rs) | Cloudflare API v4 integration | `fetch_zone_id()`, `upsert_dns_record()`, `configure_initial_dns()`, `push_dkim_record()`, `parse_opendkim_key()` |
 | [`oci.rs`](file:///d:/free-wp/src-tauri/src/oci.rs) | Oracle Cloud VM provisioning & out-of-capacity auto-retry | `provision_arm64_instance()`, `sign_request()`, `open_security_list_ports()`, `OciConfig` |
 | [`ssh.rs`](file:///d:/free-wp/src-tauri/src/ssh.rs) | Ed25519 key generation & real-time streaming remote execution | `generate_ed25519_keypair()`, `test_connection()`, `upload_file_content()`, `run_bootstrap_stream()` |

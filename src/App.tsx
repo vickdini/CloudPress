@@ -7,6 +7,7 @@ import { Step4Email } from './components/Step4Email';
 import { Step5Launch } from './components/Step5Launch';
 import { Terminal } from './components/Terminal';
 import type {
+  GcpConfig,
   OciConfig,
   DeployConfig,
   FullDeployPayload,
@@ -28,9 +29,9 @@ import { listen } from '@tauri-apps/api/event';
 const INITIAL_STAGES: StageProgress[] = [
   {
     stage: 1,
-    stage_name: 'Allocating Free Cloud Server & Firewall',
+    stage_name: 'Provisioning Google Cloud e2-micro VM & Firewall',
     status: 'idle',
-    message: 'Allocates VM.Standard.A1.Flex (1 core OCPU, 6 GB memory, 1 Gbps) on Oracle Always Free.',
+    message: 'Allocates Always Free e2-micro instance (30 GB disk, us-central1/west1/east1) on Google Cloud.',
   },
   {
     stage: 2,
@@ -73,8 +74,8 @@ const STEPS = [
   },
   {
     id: 2,
-    title: 'Free Server',
-    subtitle: '1 OCPU / 6GB RAM',
+    title: 'Google Cloud VM',
+    subtitle: 'e2-micro Always Free',
     icon: Server,
   },
   {
@@ -116,6 +117,17 @@ export const App: React.FC = () => {
   const [isTerminalOpen, setIsTerminalOpen] = useState<boolean>(false);
 
   // Form State
+  const [gcpConfig, setGcpConfig] = useState<GcpConfig>({
+    project_id: '',
+    region: 'us-central1',
+    zone: 'us-central1-a',
+    machine_type: 'e2-micro',
+    disk_size_gb: 30,
+    service_account_json_path: '',
+    ssh_public_key: '',
+    existing_vm_ip: '',
+  });
+
   const [ociConfig, setOciConfig] = useState<OciConfig>({
     tenancy_ocid: '',
     user_ocid: '',
@@ -220,12 +232,8 @@ export const App: React.FC = () => {
   // Profile Save / Load
   const handleSaveProfile = async () => {
     const profile = {
-      ociConfig: {
-        ...ociConfig,
-        shape: 'VM.Standard.A1.Flex',
-        ocpus: 1,
-        memory_in_gbs: 6,
-      },
+      gcpConfig,
+      ociConfig,
       sshPrivateKey,
       cfApiToken,
       cfZoneId,
@@ -244,20 +252,21 @@ export const App: React.FC = () => {
     try {
       const dataStr = await invoke<string>('load_profile');
       const data = JSON.parse(dataStr);
+      if (data.gcpConfig) {
+        setGcpConfig(data.gcpConfig);
+      } else if (data.ociConfig?.existing_vm_ip) {
+        // Seamlessly migrate existing IP to Google Cloud config
+        setGcpConfig(prev => ({ ...prev, existing_vm_ip: data.ociConfig.existing_vm_ip }));
+      }
       if (data.ociConfig) {
-        setOciConfig({
-          ...data.ociConfig,
-          shape: 'VM.Standard.A1.Flex',
-          ocpus: 1,
-          memory_in_gbs: 6,
-        });
+        setOciConfig(data.ociConfig);
       }
       if (data.sshPrivateKey) setSshPrivateKey(data.sshPrivateKey);
       if (data.cfApiToken) setCfApiToken(data.cfApiToken);
       if (data.cfZoneId) setCfZoneId(data.cfZoneId);
       if (data.deployConfig) setDeployConfig(data.deployConfig);
       addLog('[Profile Loaded] Successfully loaded settings from ~/.cloudpress/profile.json');
-      alert('Saved profile loaded successfully! (VM set to 1 OCPU, 6 GB memory)');
+      alert('Saved profile loaded successfully!');
     } catch (err) {
       alert(`Failed to load profile: ${err}`);
     }
@@ -281,12 +290,7 @@ export const App: React.FC = () => {
       setStages(INITIAL_STAGES.map(s => ({ ...s, status: 'idle' })));
 
       const payload: FullDeployPayload = {
-        oci: {
-          ...ociConfig,
-          shape: 'VM.Standard.A1.Flex',
-          ocpus: 1,
-          memory_in_gbs: 6,
-        },
+        gcp: gcpConfig,
         cloudflare_api_token: cfApiToken,
         cloudflare_zone_id: cfZoneId,
         deploy: deployConfig,
@@ -401,9 +405,9 @@ export const App: React.FC = () => {
 
           {activeStep === 2 && (
             <Step2Server
-              config={ociConfig}
+              config={gcpConfig}
               sshPrivateKey={sshPrivateKey}
-              onChangeOci={setOciConfig}
+              onChangeGcp={setGcpConfig}
               onChangeSshKey={setSshPrivateKey}
               onNext={() => setActiveStep(3)}
               onBack={() => setActiveStep(1)}
@@ -437,6 +441,7 @@ export const App: React.FC = () => {
           {activeStep === 5 && (
             <Step5Launch
               deployConfig={deployConfig}
+              gcpConfig={gcpConfig}
               ociConfig={ociConfig}
               stages={stages}
               currentStage={currentStageNumber}

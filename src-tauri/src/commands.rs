@@ -1,4 +1,5 @@
 use crate::cloudflare::CloudflareClient;
+use crate::gcp::{GcpConfig, GcpProvisioner};
 use crate::oci::{OciClient, OciConfig};
 use crate::ssh::{GeneratedKeyPair, SshConfig, SshManager};
 use crate::templates::{DeployConfig, Templates};
@@ -9,7 +10,10 @@ use tauri::Emitter;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FullDeployPayload {
-    pub oci: OciConfig,
+    #[serde(default)]
+    pub gcp: Option<GcpConfig>,
+    #[serde(default)]
+    pub oci: Option<OciConfig>,
     pub cloudflare_api_token: String,
     pub cloudflare_zone_id: String,
     pub deploy: DeployConfig,
@@ -75,6 +79,21 @@ pub async fn select_private_key_file() -> Result<Option<String>, String> {
     let mut dialog = rfd::AsyncFileDialog::new()
         .set_title("Select Oracle Cloud API Private Key (.pem)")
         .add_filter("PEM Private Key (*.pem, *.key)", &["pem", "key"])
+        .add_filter("All Files (*.*)", &["*"]);
+
+    if let Some(download_dir) = dirs::download_dir() {
+        dialog = dialog.set_directory(&download_dir);
+    }
+
+    let file = dialog.pick_file().await;
+    Ok(file.map(|f| f.path().to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+pub async fn select_service_account_file() -> Result<Option<String>, String> {
+    let mut dialog = rfd::AsyncFileDialog::new()
+        .set_title("Select Google Cloud Service Account JSON Key")
+        .add_filter("Google Cloud JSON (*.json)", &["json"])
         .add_filter("All Files (*.*)", &["*"]);
 
     if let Some(download_dir) = dirs::download_dir() {
@@ -184,51 +203,93 @@ pub async fn deploy_full_stack(
     }
 
     // -------------------------------------------------------------
-    // STAGE 1: Provisioning OCI Arm64 VM & Opening Firewall Ports
+    // STAGE 1: Provisioning Cloud VM (Google Cloud e2-micro or OCI)
     // -------------------------------------------------------------
-    emit_stage(
-        &app_handle,
-        1,
-        "Provisioning OCI Arm64 VM & Security Ports",
-        "running",
-        "Allocating VM.Standard.A1.Flex on Oracle Cloud...",
-    );
+    let vm_ip = if let Some(ref gcp_cfg) = payload.gcp {
+        emit_stage(
+            &app_handle,
+            1,
+            "Provisioning Google Cloud e2-micro VM & Firewall",
+            "running",
+            "Configuring Always Free e2-micro instance on Google Cloud...",
+        );
 
-    let oci_client = OciClient::new(payload.oci.clone())?;
-    let prov_res = match oci_client.provision_arm64_instance(&app_handle).await {
-        Ok(res) => res,
-        Err(e) => {
-            emit_stage(
-                &app_handle,
-                1,
-                "Provisioning OCI Arm64 VM & Security Ports",
-                "error",
-                &e,
-            );
-            return Err(e);
-        }
-    };
+        let gcp_prov = GcpProvisioner::new(gcp_cfg.clone());
+        let res = match gcp_prov.provision_vm(&app_handle).await {
+            Ok(r) => r,
+            Err(e) => {
+                emit_stage(
+                    &app_handle,
+                    1,
+                    "Provisioning Google Cloud e2-micro VM & Firewall",
+                    "error",
+                    &e,
+                );
+                return Err(e);
+            }
+        };
 
-    let vm_ip = if !prov_res.public_ip.is_empty() && prov_res.public_ip != "auto-assigned" {
-        prov_res.public_ip
-    } else if let Some(ref ip) = payload.oci.existing_vm_ip {
-        ip.clone()
+        emit_log(
+            &app_handle,
+            format!("[GCP] Target Google Cloud VM ready. External IP: {}", res.public_ip),
+        );
+
+        emit_stage(
+            &app_handle,
+            1,
+            "Provisioning Google Cloud e2-micro VM & Firewall",
+            "completed",
+            &format!("Google Cloud VM Ready (IP: {})", res.public_ip),
+        );
+        res.public_ip
+    } else if let Some(ref oci_cfg) = payload.oci {
+        emit_stage(
+            &app_handle,
+            1,
+            "Provisioning Cloud VM & Security Ports",
+            "running",
+            "Allocating Cloud VM...",
+        );
+
+        let oci_client = OciClient::new(oci_cfg.clone())?;
+        let prov_res = match oci_client.provision_arm64_instance(&app_handle).await {
+            Ok(res) => res,
+            Err(e) => {
+                emit_stage(
+                    &app_handle,
+                    1,
+                    "Provisioning Cloud VM & Security Ports",
+                    "error",
+                    &e,
+                );
+                return Err(e);
+            }
+        };
+
+        let ip = if !prov_res.public_ip.is_empty() && prov_res.public_ip != "auto-assigned" {
+            prov_res.public_ip
+        } else if let Some(ref existing) = oci_cfg.existing_vm_ip {
+            existing.clone()
+        } else {
+            return Err("Could not determine public IP of the Cloud instance.".into());
+        };
+
+        emit_log(
+            &app_handle,
+            format!("[SERVER] Confirmed target server Public IP: {}", ip),
+        );
+
+        emit_stage(
+            &app_handle,
+            1,
+            "Provisioning Cloud VM & Security Ports",
+            "completed",
+            &format!("Server Ready (IP: {})", ip),
+        );
+        ip
     } else {
-        return Err("Could not determine public IP of the Oracle Arm64 instance.".into());
+        return Err("No server configuration provided (Google Cloud or Existing IP).".into());
     };
-
-    emit_log(
-        &app_handle,
-        format!("[OCI] Confirmed target server Public IP: {}", vm_ip),
-    );
-
-    emit_stage(
-        &app_handle,
-        1,
-        "Provisioning OCI Arm64 VM & Security Ports",
-        "completed",
-        &format!("Server Ready (IP: {})", vm_ip),
-    );
 
     if is_deployment_cancelled() {
         return Err("Deployment cancelled by user.".into());

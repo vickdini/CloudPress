@@ -38,7 +38,7 @@ export const Header: React.FC<HeaderProps> = ({
               </span>
             </div>
             <p className="text-xs text-slate-400 hidden sm:block">
-              Deploy WordPress &amp; Custom Mail on Oracle Cloud Always Free in 5 simple steps
+              Deploy WordPress &amp; Custom Mail on Google Cloud Always Free (e2-micro) in 5 simple steps
             </p>
           </div>
         </div>

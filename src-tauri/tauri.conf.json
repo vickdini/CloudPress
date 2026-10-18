@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "CloudPress & Mail Deployer (Oracle Arm64 + Cloudflare)",
+        "title": "CloudPress & Mail Deployer (Google Cloud e2-micro + Cloudflare)",
         "width": 1280,
         "height": 860,
         "minWidth": 960,

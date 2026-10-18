@@ -74,6 +74,9 @@ export const Terminal: React.FC<TerminalProps> = ({
     if (text.includes('[ERROR') || text.includes('ERR]') || text.includes('FAILED') || text.includes('Error')) {
       return 'text-rose-400 bg-rose-950/20';
     }
+    if (text.includes('[GCP]') || text.includes('Google Cloud')) {
+      return 'text-amber-300 font-semibold';
+    }
     if (text.includes('[OCI]') || text.includes('Oracle')) {
       return 'text-amber-300';
     }

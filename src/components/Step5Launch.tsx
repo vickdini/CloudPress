@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import type { StageProgress, DeployConfig, OciConfig } from '../types';
+import type { StageProgress, DeployConfig, GcpConfig, OciConfig } from '../types';
 import {
   Rocket,
   CheckCircle2,
@@ -22,7 +22,8 @@ import {
 
 interface Step5LaunchProps {
   deployConfig: DeployConfig;
-  ociConfig: OciConfig;
+  gcpConfig?: GcpConfig;
+  ociConfig?: OciConfig;
   stages: StageProgress[];
   currentStage: number;
   isDeploying: boolean;
@@ -37,7 +38,7 @@ interface Step5LaunchProps {
 const FRIENDLY_STAGE_INFO: Record<number, { title: string; desc: string }> = {
   1: {
     title: 'Allocating Free Cloud Server',
-    desc: 'Connecting to Oracle Cloud to provision your 1 core OCPU / 6 GB memory instance (1 Gbps) and configure security firewalls.',
+    desc: 'Connecting to Google Cloud to provision your Always Free e2-micro instance (30 GB disk, us-central1/west1/east1) and configure security firewalls.',
   },
   2: {
     title: 'Connecting Domain & DNS Security',
@@ -63,6 +64,7 @@ const FRIENDLY_STAGE_INFO: Record<number, { title: string; desc: string }> = {
 
 export const Step5Launch: React.FC<Step5LaunchProps> = ({
   deployConfig,
+  gcpConfig,
   ociConfig,
   stages,
   currentStage,
@@ -334,13 +336,17 @@ SMTP (Outgoing): mail.${deployConfig.domain}:587 (STARTTLS)
 
               <div className="space-y-1.5 text-xs">
                 <div className="text-base font-bold text-white">
-                  {ociConfig.existing_vm_ip ? `Existing VM (${ociConfig.existing_vm_ip})` : 'Oracle Always Free Arm64'}
+                  {gcpConfig?.existing_vm_ip
+                    ? `Google Cloud e2-micro (${gcpConfig.existing_vm_ip})`
+                    : ociConfig?.existing_vm_ip
+                    ? `Existing Server (${ociConfig.existing_vm_ip})`
+                    : `Google Cloud e2-micro (${gcpConfig?.region || 'us-central1'})`}
                 </div>
                 <div className="text-slate-300">
-                  Specs: 1 core OCPU, 6 GB memory, 1 Gbps network (VM.Standard.A1.Flex) ($0.00 / mo)
+                  Always Free: e2-micro (2 vCPUs burstable, 1 GB RAM + 3 GB CloudPress Swap, 30 GB standard disk) ($0.00 / mo)
                 </div>
                 <div className="text-slate-400">
-                  Security Key: <span className="text-emerald-400 font-medium">Secured with Ed25519</span>
+                  Security Key: <span className="text-emerald-400 font-medium">Secured with Ed25519 (user: ubuntu)</span>
                 </div>
               </div>
             </div>

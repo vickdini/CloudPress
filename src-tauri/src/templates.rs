@@ -90,7 +90,7 @@ impl Templates {
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
-      - --innodb-buffer-pool-size=512M
+      - --innodb-buffer-pool-size=256M
     environment:
       MYSQL_DATABASE: ${MYSQL_DATABASE:-wordpress}
       MYSQL_USER: ${MYSQL_USER:-wpuser}
@@ -276,24 +276,24 @@ add_action('phpmailer_init', function($phpmailer) {{
             r#"#!/usr/bin/env bash
 set -e
 
-echo "[BOOTSTRAP] Starting Zero-Cost WordPress + Mailserver setup on Oracle Arm64..."
+echo "[BOOTSTRAP] Starting Zero-Cost WordPress + Mailserver setup on Google Cloud (e2-micro)..."
 export DEBIAN_FRONTEND=noninteractive
 
-# 1. Setup 2GB Swap space (crucial for stability on Arm64)
+# 1. Setup 3GB Swap space (crucial for stability on Google Cloud e2-micro 1GB RAM)
 if [ ! -f /swapfile ]; then
-    echo "[BOOTSTRAP] Creating 2GB swapfile..."
-    fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048
+    echo "[BOOTSTRAP] Creating 3GB swapfile for Google Cloud e2-micro..."
+    fallocate -l 3G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=3072
     chmod 600 /swapfile
     mkswap /swapfile
     swapon /swapfile
     echo '/swapfile none swap sw 0 0' >> /etc/fstab
-    echo "[BOOTSTRAP] Swapfile configured successfully."
+    echo "[BOOTSTRAP] 3GB swapfile configured successfully."
 else
     echo "[BOOTSTRAP] Swapfile already exists."
 fi
 
-# 2. Fix Oracle Cloud Ubuntu restrictive default iptables firewall
-echo "[BOOTSTRAP] Configuring firewall for Oracle Cloud (opening 80, 443, 25, 587, 993)..."
+# 2. Configure Ubuntu firewall (opening 80, 443, 25, 587, 993)
+echo "[BOOTSTRAP] Configuring firewall (opening 80, 443, 25, 587, 993)..."
 iptables -I INPUT 1 -p tcp --match multiport --dports 80,443,25,587,993 -j ACCEPT || true
 
 if command -v netfilter-persistent &> /dev/null; then

@@ -1,3 +1,14 @@
+export interface GcpConfig {
+  project_id: string;
+  region: 'us-central1' | 'us-west1' | 'us-east1';
+  zone: string;
+  machine_type: string; // 'e2-micro'
+  disk_size_gb: number; // 30
+  service_account_json_path: string;
+  ssh_public_key: string;
+  existing_vm_ip?: string;
+}
+
 export interface OciConfig {
   tenancy_ocid: string;
   user_ocid: string;
@@ -35,7 +46,8 @@ export interface DeployConfig {
 }
 
 export interface FullDeployPayload {
-  oci: OciConfig;
+  gcp?: GcpConfig;
+  oci?: OciConfig;
   cloudflare_api_token: string;
   cloudflare_zone_id: string;
   deploy: DeployConfig;
