@@ -121,6 +121,33 @@ export const App: React.FC = () => {
     },
   ]);
   const [isTerminalOpen, setIsTerminalOpen] = useState<boolean>(false);
+  const [isTerminalExpanded, setIsTerminalExpanded] = useState<boolean>(false);
+
+  // Dynamic clearance for terminal so content is never trapped behind it when open
+  const terminalBottomPadding = !isTerminalOpen
+    ? '5rem'
+    : isTerminalExpanded
+    ? 'calc(75vh + 3.5rem)'
+    : 'calc(18rem + 3.5rem)';
+
+  useEffect(() => {
+    if (isTerminalOpen) {
+      const scrollY = window.scrollY;
+      const windowHeight = window.innerHeight;
+      const docHeight = document.documentElement.scrollHeight;
+      const distanceFromBottom = docHeight - (scrollY + windowHeight);
+
+      if (distanceFromBottom < 400) {
+        const timer = setTimeout(() => {
+          window.scrollBy({
+            top: isTerminalExpanded ? windowHeight * 0.75 : 300,
+            behavior: 'smooth',
+          });
+        }, 100);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [isTerminalOpen, isTerminalExpanded]);
 
   // Form State
   const [gcpConfig, setGcpConfig] = useState<GcpConfig>({
@@ -392,7 +419,10 @@ export const App: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-background text-slate-100 flex flex-col font-sans pb-28 selection:bg-indigo-500/30 selection:text-indigo-200">
+    <div
+      className="min-h-screen bg-background text-slate-100 flex flex-col font-sans selection:bg-indigo-500/30 selection:text-indigo-200 transition-[padding-bottom] duration-300 ease-in-out"
+      style={{ paddingBottom: terminalBottomPadding }}
+    >
       <Header
         onSaveProfile={handleSaveProfile}
         onLoadProfile={handleLoadProfile}
@@ -619,6 +649,8 @@ export const App: React.FC = () => {
         isOpen={isTerminalOpen}
         onToggleOpen={() => setIsTerminalOpen(!isTerminalOpen)}
         onClearLogs={() => setLogs([])}
+        isExpanded={isTerminalExpanded}
+        onToggleExpanded={() => setIsTerminalExpanded(!isTerminalExpanded)}
       />
     </div>
   );

@@ -20,6 +20,8 @@ interface TerminalProps {
   isOpen: boolean;
   onToggleOpen: () => void;
   onClearLogs: () => void;
+  isExpanded?: boolean;
+  onToggleExpanded?: () => void;
 }
 
 export const Terminal: React.FC<TerminalProps> = ({
@@ -27,10 +29,20 @@ export const Terminal: React.FC<TerminalProps> = ({
   isOpen,
   onToggleOpen,
   onClearLogs,
+  isExpanded: controlledExpanded,
+  onToggleExpanded,
 }) => {
   const [filterText, setFilterText] = useState('');
   const [autoScroll, setAutoScroll] = useState(true);
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [internalExpanded, setInternalExpanded] = useState(false);
+  const isExpanded = controlledExpanded !== undefined ? controlledExpanded : internalExpanded;
+  const toggleExpanded = () => {
+    if (onToggleExpanded) {
+      onToggleExpanded();
+    } else {
+      setInternalExpanded(!internalExpanded);
+    }
+  };
   const [copied, setCopied] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -197,7 +209,7 @@ export const Terminal: React.FC<TerminalProps> = ({
               {/* Expand Height */}
               <button
                 type="button"
-                onClick={() => setIsExpanded(!isExpanded)}
+                onClick={toggleExpanded}
                 className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-surface-lighter rounded-lg transition-colors hidden sm:block"
                 title={isExpanded ? 'Restore height' : 'Expand full height'}
               >
