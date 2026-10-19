@@ -33,20 +33,18 @@ export const NotificationToast: React.FC<NotificationToastProps> = ({
   useEffect(() => {
     if (!notification) return;
 
-    setProgress(100);
+    let localProgress = 100;
     const intervalTime = 100;
     const step = (intervalTime / autoCloseDuration) * 100;
 
     const timer = setInterval(() => {
       if (!isPaused) {
-        setProgress(prev => {
-          if (prev <= step) {
-            clearInterval(timer);
-            onClose();
-            return 0;
-          }
-          return prev - step;
-        });
+        localProgress = Math.max(0, localProgress - step);
+        setProgress(localProgress);
+        if (localProgress <= 0) {
+          clearInterval(timer);
+          onClose();
+        }
       }
     }, intervalTime);
 

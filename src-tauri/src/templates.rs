@@ -195,7 +195,7 @@ mail.{domain} {{
     }
 
     /// Generates .env file content
-    pub fn env_file(cfg: &DeployConfig) -> String {
+    pub fn env_file(cfg: &DeployConfig, cf_api_token: &str, cf_zone_id: &str) -> String {
         format!(
             r#"DOMAIN={domain}
 MYSQL_DATABASE={db_name}
@@ -211,6 +211,8 @@ WP_SITE_TITLE={wp_title}
 WP_ADMIN_USER={wp_user}
 WP_ADMIN_PASSWORD={wp_pass}
 WP_ADMIN_EMAIL={wp_email}
+CF_API_TOKEN={cf_token}
+CF_ZONE_ID={cf_zone}
 "#,
             domain = cfg.domain,
             db_name = cfg.mysql_database,
@@ -226,7 +228,117 @@ WP_ADMIN_EMAIL={wp_email}
             wp_user = cfg.wp_admin_user,
             wp_pass = cfg.wp_admin_password,
             wp_email = cfg.wp_admin_email,
+            cf_token = cf_api_token,
+            cf_zone = cf_zone_id,
         )
+    }
+
+    /// Generates cloudflare-ddns.sh script that dynamically monitors and updates Cloudflare DNS records
+    /// if Google Cloud assigns a new external IP address to the VM.
+    pub fn cloudflare_ddns_sh() -> String {
+        r#"#!/usr/bin/env bash
+# ==============================================================================
+# CloudPress Automatic Dynamic DNS (DDNS) for Cloudflare
+# Monitors the VM's public IP and syncs Cloudflare A records if the IP changes.
+# ==============================================================================
+
+set -euo pipefail
+
+ENV_FILE="/opt/wp-deployer/.env"
+CACHE_FILE="/opt/wp-deployer/.last_ip"
+LOG_FILE="/var/log/cloudpress-ddns.log"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [DDNS] $*" | tee -a "$LOG_FILE"
+}
+
+if [ ! -f "$ENV_FILE" ]; then
+    log "Config file $ENV_FILE not found. Exiting."
+    exit 0
+fi
+
+# Extract credentials from .env
+CF_API_TOKEN=$(grep -E '^CF_API_TOKEN=' "$ENV_FILE" | cut -d '=' -f2- | tr -d '"\r\n' || true)
+CF_ZONE_ID=$(grep -E '^CF_ZONE_ID=' "$ENV_FILE" | cut -d '=' -f2- | tr -d '"\r\n' || true)
+DOMAIN=$(grep -E '^DOMAIN=' "$ENV_FILE" | cut -d '=' -f2- | tr -d '"\r\n' || true)
+
+if [ -z "$CF_API_TOKEN" ] || [ -z "$CF_ZONE_ID" ] || [ -z "$DOMAIN" ]; then
+    log "Cloudflare credentials or domain missing in $ENV_FILE. Skipping DDNS check."
+    exit 0
+fi
+
+# Detect current external public IPv4 address with multiple redundant fallbacks
+CURRENT_IP=""
+for url in "https://api.ipify.org" "https://ifconfig.me" "https://checkip.amazonaws.com" "https://icanhazip.com"; do
+    IP=$(curl -s4 --connect-timeout 8 --max-time 15 "$url" 2>/dev/null | tr -d '[:space:]' || true)
+    if echo "$IP" | grep -Eq '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$'; then
+        CURRENT_IP="$IP"
+        break
+    fi
+done
+
+if [ -z "$CURRENT_IP" ]; then
+    log "Warning: Unable to determine public IPv4 address from any provider. Will retry next cycle."
+    exit 0
+fi
+
+# Check against cached IP to prevent redundant API calls
+if [ -f "$CACHE_FILE" ]; then
+    LAST_IP=$(cat "$CACHE_FILE" | tr -d '[:space:]' || true)
+    if [ "$CURRENT_IP" = "$LAST_IP" ]; then
+        # IP has not changed, silent exit
+        exit 0
+    fi
+fi
+
+log "IP change detected! Previous: '${LAST_IP:-none}', New: '$CURRENT_IP'. Updating Cloudflare DNS..."
+
+# Fetch existing A records for this zone from Cloudflare
+EXISTING_RECORDS=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records?type=A" \
+    -H "Authorization: Bearer $CF_API_TOKEN" \
+    -H "Content-Type: application/json" || true)
+
+# Update @, www, and mail records
+TARGET_RECORDS=("$DOMAIN" "www.$DOMAIN" "mail.$DOMAIN")
+
+for REC_NAME in "${TARGET_RECORDS[@]}"; do
+    # Mail must NOT be proxied (proxy breaks raw SMTP/IMAP ports); @ and www should be proxied
+    PROXIED=true
+    if [[ "$REC_NAME" == mail.* ]]; then
+        PROXIED=false
+    fi
+
+    # Find matching record ID
+    REC_ID=""
+    if command -v jq &>/dev/null; then
+        REC_ID=$(echo "$EXISTING_RECORDS" | jq -r --arg n "$REC_NAME" '.result[]? | select(.name == $n) | .id' 2>/dev/null | head -n 1 || true)
+    else
+        # Fallback without jq using grep & sed
+        REC_ID=$(echo "$EXISTING_RECORDS" | grep -o '{"id":"[^"]*","zone_id":"[^"]*","zone_name":"[^"]*","name":"'"$REC_NAME"'"' | head -n 1 | sed -E 's/.*"id":"([^"]+)".*/\1/' || true)
+    fi
+
+    if [ -n "$REC_ID" ] && [ "$REC_ID" != "null" ]; then
+        # Update existing record
+        RES=$(curl -s -X PATCH "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records/$REC_ID" \
+            -H "Authorization: Bearer $CF_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data '{"content":"'"$CURRENT_IP"'","proxied":'"$PROXIED"'}' || true)
+        log "Updated $REC_NAME -> $CURRENT_IP (proxied: $PROXIED)"
+    else
+        # Record does not exist, create it
+        RES=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/dns_records" \
+            -H "Authorization: Bearer $CF_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data '{"type":"A","name":"'"$REC_NAME"'","content":"'"$CURRENT_IP"'","ttl":1,"proxied":'"$PROXIED"'}' || true)
+        log "Created $REC_NAME -> $CURRENT_IP (proxied: $PROXIED)"
+    fi
+done
+
+echo "$CURRENT_IP" > "$CACHE_FILE"
+chmod 600 "$CACHE_FILE"
+log "Cloudflare DNS update complete. Cached IP is now $CURRENT_IP."
+"#
+        .to_string()
     }
 
     /// Generates the WordPress SMTP MU-Plugin to route all wp_mail through mailserver
@@ -432,6 +544,50 @@ docker compose exec -T -u root wordpress chmod -R 755 /var/www/html || true
 
 echo "[BOOTSTRAP] Restarting WordPress PHP-FPM container..."
 docker compose restart wordpress
+
+# 8. Setup Cloudflare Dynamic DNS (DDNS) Service & Timer
+echo "[BOOTSTRAP] Configuring automatic Cloudflare Dynamic DNS (DDNS) monitoring..."
+chmod +x /opt/wp-deployer/cloudflare-ddns.sh
+
+# Install jq if missing for robust JSON parsing
+if ! command -v jq &> /dev/null; then
+    apt-get update -y && apt-get install -y jq || true
+fi
+
+# Create systemd service for DDNS
+cat << 'EOF' > /etc/systemd/system/cloudpress-ddns.service
+[Unit]
+Description=CloudPress Cloudflare Dynamic DNS Updater
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/wp-deployer/cloudflare-ddns.sh
+StandardOutput=journal
+StandardError=journal
+EOF
+
+# Create systemd timer to run DDNS 1 min after boot and every 5 minutes
+cat << 'EOF' > /etc/systemd/system/cloudpress-ddns.timer
+[Unit]
+Description=Run CloudPress Cloudflare Dynamic DNS every 5 minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now cloudpress-ddns.timer
+
+# Run the DDNS script once immediately to cache the initial IP
+/opt/wp-deployer/cloudflare-ddns.sh || true
+echo "[BOOTSTRAP] Dynamic DNS (DDNS) service activated and running."
 
 echo "[BOOTSTRAP] Stack successfully deployed and active!"
 "#,

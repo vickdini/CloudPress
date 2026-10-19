@@ -558,8 +558,15 @@ pub async fn deploy_full_stack(
         emit_log(&app_handle, "[Templates] Generating Caddyfile...");
         let caddyfile = Templates::caddyfile(&payload.deploy.domain);
 
-        emit_log(&app_handle, "[Templates] Generating .env config...");
-        let env_file = Templates::env_file(&payload.deploy);
+        emit_log(&app_handle, "[Templates] Generating .env config with Cloudflare tokens...");
+        let env_file = Templates::env_file(
+            &payload.deploy,
+            &payload.cloudflare_api_token,
+            &payload.cloudflare_zone_id,
+        );
+
+        emit_log(&app_handle, "[Templates] Generating Cloudflare Dynamic DNS (DDNS) updater...");
+        let ddns_sh = Templates::cloudflare_ddns_sh();
 
         emit_log(&app_handle, "[Templates] Generating bootstrap.sh...");
         let bootstrap_sh = Templates::bootstrap_sh(&payload.deploy);
@@ -569,6 +576,7 @@ pub async fn deploy_full_stack(
             ("/opt/wp-deployer/docker-compose.yml", &docker_compose),
             ("/opt/wp-deployer/Caddyfile", &caddyfile),
             ("/opt/wp-deployer/.env", &env_file),
+            ("/opt/wp-deployer/cloudflare-ddns.sh", &ddns_sh),
             ("/opt/wp-deployer/bootstrap.sh", &bootstrap_sh),
         ] {
             emit_log(&app_handle, format!("[SFTP/SSH] Uploading {}...", filename));
