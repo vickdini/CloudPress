@@ -4,7 +4,7 @@
 [![React 19](https://img.shields.io/badge/React-19.2-61DAFB?style=flat&logo=react&logoColor=black)](https://react.dev/)
 [![Rust](https://img.shields.io/badge/Rust-2024_Edition-black?style=flat&logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind-3.4-38B2AC?style=flat&logo=tailwind-css&logoColor=white)](https://tailwindcss.com/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
 > **Deploy a high-performance WordPress website and custom business email server onto Google Cloud's Always Free tier in minutes—with zero recurring infrastructure costs, zero coding, and automated Cloudflare DNS configuration.**
 
@@ -144,4 +144,4 @@ free-wp/
 
 ## 📄 License
 
-This project is licensed under the [MIT License](LICENSE).
+This project is licensed under the [GNU General Public License v3.0](LICENSE) (GPL-3.0).
