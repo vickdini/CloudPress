@@ -20,7 +20,9 @@ import {
   XCircle,
   RefreshCw,
   Trash2,
+  Volume2,
 } from 'lucide-react';
+import { playSuccessChime } from '../utils';
 
 interface Step5LaunchProps {
   deployConfig: DeployConfig;
@@ -206,14 +208,26 @@ SMTP (Outgoing): mail.${deployConfig.domain}:587 (STARTTLS)
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={handleCopyCredentials}
-              className="px-4 py-2.5 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-600/20 flex items-center gap-2 transition-all"
-            >
-              {copiedInfo ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-              <span>{copiedInfo ? 'Copied to Clipboard!' : 'Copy All Login Info'}</span>
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => playSuccessChime()}
+                className="px-3.5 py-2.5 rounded-xl text-xs font-semibold bg-surface-lighter hover:bg-surface-border text-emerald-300 border border-emerald-500/30 flex items-center gap-1.5 transition-all shadow-sm active:scale-95"
+                title="Play success chime again"
+              >
+                <Volume2 className="w-4 h-4 text-emerald-400" />
+                <span className="hidden sm:inline">Play Chime</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleCopyCredentials}
+                className="px-4 py-2.5 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-600/20 flex items-center gap-2 transition-all active:scale-95"
+              >
+                {copiedInfo ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                <span>{copiedInfo ? 'Copied to Clipboard!' : 'Copy All Login Info'}</span>
+              </button>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-5">

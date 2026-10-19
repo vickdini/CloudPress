@@ -29,6 +29,8 @@ import {
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { NotificationToast, type CompletionNotificationData } from './components/NotificationToast';
+import { playSuccessChime, requestNotificationPermission, sendSystemNotification } from './utils';
 
 const INITIAL_STAGES: StageProgress[] = [
   {
@@ -122,6 +124,7 @@ export const App: React.FC = () => {
   ]);
   const [isTerminalOpen, setIsTerminalOpen] = useState<boolean>(false);
   const [isTerminalExpanded, setIsTerminalExpanded] = useState<boolean>(false);
+  const [completionNotification, setCompletionNotification] = useState<CompletionNotificationData | null>(null);
 
   // Dynamic clearance for terminal so content is never trapped behind it when open
   const terminalBottomPadding = !isTerminalOpen
@@ -363,6 +366,9 @@ export const App: React.FC = () => {
     }
 
     try {
+      // Proactively request notification permission for desktop alerts on completion
+      requestNotificationPermission();
+
       setIsDeploying(true);
       setDeployError(null);
       setExistingDnsModal(null);
@@ -381,6 +387,25 @@ export const App: React.FC = () => {
 
       const result = await invoke<string>('deploy_full_stack', { payload });
       addLog(`[COMPLETED] ${result}`);
+
+      // Ensure all stages are marked completed
+      setStages(prev => prev.map(s => ({ ...s, status: 'completed' })));
+
+      // 1. Play short celebratory chime sound
+      playSuccessChime();
+
+      // 2. Trigger OS desktop notification
+      sendSystemNotification('CloudPress: Deployment Complete! 🎉', {
+        body: `Your WordPress website (https://${payload.deploy.domain}) and custom email server are now 100% LIVE!`,
+      });
+
+      // 3. Show in-app completion notification toast
+      setCompletionNotification({
+        title: 'Deployment Complete! 🎉',
+        message: `Your WordPress website and email stack for ${payload.deploy.domain} are now live and fully configured.`,
+        domain: payload.deploy.domain,
+        timestamp: new Date().toLocaleTimeString(),
+      });
     } catch (err) {
       const errorStr = String(err);
       setDeployError(errorStr);
@@ -651,6 +676,12 @@ export const App: React.FC = () => {
         onClearLogs={() => setLogs([])}
         isExpanded={isTerminalExpanded}
         onToggleExpanded={() => setIsTerminalExpanded(!isTerminalExpanded)}
+      />
+
+      {/* Completion Notification Toast */}
+      <NotificationToast
+        notification={completionNotification}
+        onClose={() => setCompletionNotification(null)}
       />
     </div>
   );
