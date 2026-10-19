@@ -428,7 +428,7 @@ impl GcpProvisioner {
         &self,
         app_handle: &tauri::AppHandle<R>,
     ) -> Result<GcpProvisioningResult, String> {
-        let check = tokio::process::Command::new("gcloud")
+        let check = crate::process_utils::tokio_command("gcloud")
             .arg("--version")
             .output()
             .await;
@@ -443,7 +443,7 @@ impl GcpProvisioner {
         );
 
         let instance_name = format!("cloudpress-vm-{}", chrono::Utc::now().timestamp());
-        let mut cmd = tokio::process::Command::new("gcloud");
+        let mut cmd = crate::process_utils::tokio_command("gcloud");
         cmd.args([
             "compute",
             "instances",
@@ -725,7 +725,7 @@ impl GcpProvisioner {
         }
 
         // Fallback: try gcloud
-        let mut cmd = tokio::process::Command::new("gcloud");
+        let mut cmd = crate::process_utils::tokio_command("gcloud");
         cmd.args([
             "compute",
             "instances",
@@ -847,7 +847,7 @@ impl GcpProvisioner {
         }
 
         // Fallback: check via local gcloud CLI if OAuth/Service Account wasn't used
-        let mut list_cmd = tokio::process::Command::new("gcloud");
+        let mut list_cmd = crate::process_utils::tokio_command("gcloud");
         list_cmd.args([
             "compute",
             "instances",

@@ -2,6 +2,7 @@ pub mod cloudflare;
 pub mod commands;
 pub mod gcp;
 pub mod oci;
+pub mod process_utils;
 pub mod ssh;
 pub mod templates;
 

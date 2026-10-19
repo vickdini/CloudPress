@@ -86,13 +86,13 @@ impl SshManager {
             let path_str = key_path.to_string_lossy().to_string();
 
             // 1. Remove inheritance and wipe all other user/group permissions
-            let _ = std::process::Command::new("icacls")
+            let _ = crate::process_utils::std_command("icacls")
                 .arg(&path_str)
                 .arg("/inheritance:r")
                 .output();
 
             // 2. Explicitly grant only the current user Read & Write permissions
-            let _ = std::process::Command::new("icacls")
+            let _ = crate::process_utils::std_command("icacls")
                 .arg(&path_str)
                 .arg("/grant:r")
                 .arg(format!("{}:(R,W)", username))
@@ -106,7 +106,7 @@ impl SshManager {
     pub async fn test_connection(cfg: &SshConfig) -> Result<String, String> {
         let key_path = Self::save_temp_key(&cfg.private_key)?;
 
-        let mut cmd = tokio::process::Command::new("ssh");
+        let mut cmd = crate::process_utils::tokio_command("ssh");
         cmd.arg("-i")
             .arg(&key_path)
             .arg("-p")
@@ -151,7 +151,7 @@ impl SshManager {
         );
 
         while start.elapsed().as_secs() < max_wait_secs {
-            let mut cmd = tokio::process::Command::new("ssh");
+            let mut cmd = crate::process_utils::tokio_command("ssh");
             cmd.arg("-i")
                 .arg(key_path)
                 .arg("-p")
@@ -207,7 +207,7 @@ impl SshManager {
 
         let mut last_err = String::new();
         for attempt in 1..=3 {
-            let mut cmd = tokio::process::Command::new("ssh");
+            let mut cmd = crate::process_utils::tokio_command("ssh");
             cmd.arg("-i")
                 .arg(key_path)
                 .arg("-p")
@@ -254,7 +254,7 @@ impl SshManager {
             format!("[SSH] Connecting to {}@{}...", cfg.username, cfg.host),
         );
 
-        let mut cmd = tokio::process::Command::new("ssh");
+        let mut cmd = crate::process_utils::tokio_command("ssh");
         cmd.arg("-i")
             .arg(key_path)
             .arg("-p")

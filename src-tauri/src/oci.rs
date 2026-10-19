@@ -359,7 +359,7 @@ impl OciClient {
 
     async fn try_provision_via_oci_cli(&self) -> Result<ProvisioningResult, String> {
         // If oci command line is available on host
-        let check = tokio::process::Command::new("oci")
+        let check = crate::process_utils::tokio_command("oci")
             .arg("--version")
             .output()
             .await;

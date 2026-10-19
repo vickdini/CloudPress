@@ -531,7 +531,7 @@ pub async fn deploy_full_stack(
         );
         let prepare_cmd = "sudo mkdir -p /opt/wp-deployer && sudo chown -R ubuntu:ubuntu /opt/wp-deployer && sudo chmod 755 /opt/wp-deployer";
 
-        let mut prep_proc = tokio::process::Command::new("ssh");
+        let mut prep_proc = crate::process_utils::tokio_command("ssh");
         prep_proc
             .arg("-i")
             .arg(&temp_key_path)
