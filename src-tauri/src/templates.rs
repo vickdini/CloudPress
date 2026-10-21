@@ -65,6 +65,7 @@ impl Templates {
   wordpress:
     image: wordpress:fpm-alpine
     restart: unless-stopped
+    env_file: .env
     environment:
       WORDPRESS_DB_HOST: db
       WORDPRESS_DB_NAME: ${MYSQL_DATABASE:-wordpress}
@@ -87,6 +88,7 @@ impl Templates {
   db:
     image: mariadb:11
     restart: unless-stopped
+    env_file: .env
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
@@ -104,6 +106,7 @@ impl Templates {
   wpcli:
     image: wordpress:cli-php8.3
     user: "0:0"
+    env_file: .env
     environment:
       WORDPRESS_DB_HOST: db
       WORDPRESS_DB_NAME: ${MYSQL_DATABASE:-wordpress}
@@ -194,7 +197,7 @@ mail.{domain} {{
         )
     }
 
-    /// Generates .env file content
+    /// Generates .env file content with safe escaping
     pub fn env_file(cfg: &DeployConfig, cf_api_token: &str, cf_zone_id: &str) -> String {
         format!(
             r#"DOMAIN={domain}
@@ -214,22 +217,22 @@ WP_ADMIN_EMAIL={wp_email}
 CF_API_TOKEN={cf_token}
 CF_ZONE_ID={cf_zone}
 "#,
-            domain = cfg.domain,
-            db_name = cfg.mysql_database,
-            db_user = cfg.mysql_user,
-            db_pass = cfg.mysql_password,
-            db_root_pass = cfg.mysql_root_password,
-            smtp_host = cfg.smtp_relay_host,
-            smtp_user = cfg.smtp_relay_user,
-            smtp_pass = cfg.smtp_relay_password,
-            mail_acc = cfg.mail_account,
-            mail_pass = cfg.mail_password,
-            wp_title = cfg.wp_site_title,
-            wp_user = cfg.wp_admin_user,
-            wp_pass = cfg.wp_admin_password,
-            wp_email = cfg.wp_admin_email,
-            cf_token = cf_api_token,
-            cf_zone = cf_zone_id,
+            domain = escape_env(&cfg.domain),
+            db_name = escape_env(&cfg.mysql_database),
+            db_user = escape_env(&cfg.mysql_user),
+            db_pass = escape_env(&cfg.mysql_password),
+            db_root_pass = escape_env(&cfg.mysql_root_password),
+            smtp_host = escape_env(&cfg.smtp_relay_host),
+            smtp_user = escape_env(&cfg.smtp_relay_user),
+            smtp_pass = escape_env(&cfg.smtp_relay_password),
+            mail_acc = escape_env(&cfg.mail_account),
+            mail_pass = escape_env(&cfg.mail_password),
+            wp_title = escape_env(&cfg.wp_site_title),
+            wp_user = escape_env(&cfg.wp_admin_user),
+            wp_pass = escape_env(&cfg.wp_admin_password),
+            wp_email = escape_env(&cfg.wp_admin_email),
+            cf_token = escape_env(cf_api_token),
+            cf_zone = escape_env(cf_zone_id),
         )
     }
 
@@ -341,7 +344,8 @@ log "Cloudflare DNS update complete. Cached IP is now $CURRENT_IP."
         .to_string()
     }
 
-    /// Generates the WordPress SMTP MU-Plugin to route all wp_mail through mailserver
+    /// Generates the WordPress SMTP MU-Plugin to route all wp_mail through mailserver.
+    /// Safely escapes interpolated variables and relies on standard TLS certificate verification.
     pub fn wp_smtp_mu_plugin(cfg: &DeployConfig) -> String {
         format!(
             r#"<?php
@@ -357,30 +361,23 @@ add_action('phpmailer_init', function($phpmailer) {{
     $phpmailer->Host = 'mailserver';
     $phpmailer->Port = 587;
     $phpmailer->SMTPAuth = true;
-    $phpmailer->Username = '{mail_acc}';
-    $phpmailer->Password = '{mail_pass}';
+    $phpmailer->Username = getenv('MAIL_ACCOUNT') ?: '{mail_acc}';
+    $phpmailer->Password = getenv('MAIL_PASSWORD') ?: '{mail_pass}';
     $phpmailer->SMTPSecure = 'tls';
-    $phpmailer->From = '{mail_acc}';
-    $phpmailer->FromName = '{site_title}';
-    $phpmailer->SMTPOptions = array(
-        'ssl' => array(
-            'verify_peer' => false,
-            'verify_peer_name' => false,
-            'allow_self_signed' => true
-        )
-    );
+    $phpmailer->From = getenv('MAIL_ACCOUNT') ?: '{mail_acc}';
+    $phpmailer->FromName = getenv('WP_SITE_TITLE') ?: '{site_title}';
 }});
 "#,
-            mail_acc = cfg.mail_account,
-            mail_pass = cfg.mail_password,
-            site_title = cfg.wp_site_title
+            mail_acc = escape_php_string(&cfg.mail_account),
+            mail_pass = escape_php_string(&cfg.mail_password),
+            site_title = escape_php_string(&cfg.wp_site_title)
         )
     }
 
-    /// Generates bootstrap.sh shell script for the remote server
+    /// Generates bootstrap.sh shell script for the remote server.
+    /// Relies on safely quoted environment variables from .env to prevent command injection.
     pub fn bootstrap_sh(cfg: &DeployConfig) -> String {
         let mu_plugin_content = Self::wp_smtp_mu_plugin(cfg);
-        // Base64 encode the plugin to avoid escaping issues in bash
         use base64::Engine;
         let mu_plugin_b64 =
             base64::engine::general_purpose::STANDARD.encode(mu_plugin_content.as_bytes());
@@ -436,6 +433,14 @@ fi
 
 # 4. Navigate to deployment directory and spin up Docker stack
 cd /opt/wp-deployer
+
+# Load environment variables safely
+if [ -f /opt/wp-deployer/.env ]; then
+    set -a
+    . /opt/wp-deployer/.env
+    set +a
+fi
+
 echo "[BOOTSTRAP] Pulling container images and starting Docker Compose stack..."
 docker compose pull
 docker compose up -d
@@ -444,18 +449,19 @@ echo "[BOOTSTRAP] Waiting for containers to initialize..."
 sleep 15
 
 # 5. Setup Mail Account and DKIM in docker-mailserver
-echo "[BOOTSTRAP] Configuring docker-mailserver user '{mail_acc}'..."
-docker exec mailserver setup email add "{mail_acc}" "{mail_pass}" || true
+echo "[BOOTSTRAP] Configuring docker-mailserver user '${{MAIL_ACCOUNT}}'..."
+docker exec mailserver setup email add "${{MAIL_ACCOUNT}}" "${{MAIL_PASSWORD}}" || true
 
-echo "[BOOTSTRAP] Generating OpenDKIM keys for domain '{domain}'..."
-docker exec mailserver setup config dkim domain "{domain}" || true
+echo "[BOOTSTRAP] Generating OpenDKIM keys for domain '${{DOMAIN}}'..."
+docker exec mailserver setup config dkim domain "${{DOMAIN}}" || true
 
 # Extract OpenDKIM key for Cloudflare DNS pushing
 echo "===BEGIN_DKIM_OUTPUT==="
-if [ -f /tmp/docker-mailserver/opendkim/keys/{domain}/mail.txt ]; then
-    cat /tmp/docker-mailserver/opendkim/keys/{domain}/mail.txt
-elif docker exec mailserver test -f /tmp/docker-mailserver/opendkim/keys/{domain}/mail.txt; then
-    docker exec mailserver cat /tmp/docker-mailserver/opendkim/keys/{domain}/mail.txt
+DKIM_FILE="/tmp/docker-mailserver/opendkim/keys/${{DOMAIN}}/mail.txt"
+if [ -f "$DKIM_FILE" ]; then
+    cat "$DKIM_FILE"
+elif docker exec mailserver test -f "$DKIM_FILE"; then
+    docker exec mailserver cat "$DKIM_FILE"
 else
     echo "NO_DKIM_FILE_FOUND"
 fi
@@ -482,7 +488,7 @@ echo "[BOOTSTRAP] Waiting for MariaDB to accept connections from WordPress conta
 RETRIES=60
 until docker compose exec -T -u root wordpress php -r '
 mysqli_report(MYSQLI_REPORT_OFF);
-$conn = @mysqli_connect("db", "{db_user}", "{db_pass}", "{db_name}");
+$conn = @mysqli_connect("db", getenv("MYSQL_USER"), getenv("MYSQL_PASSWORD"), getenv("MYSQL_DATABASE"));
 if ($conn) {{
     mysqli_close($conn);
     exit(0);
@@ -504,14 +510,14 @@ docker compose exec -T -u root wordpress chown -R www-data:www-data /var/www/htm
 
 echo "[BOOTSTRAP] Generating robust wp-config.php..."
 docker compose run --rm wpcli wp config create \
-    --dbname="{db_name}" \
-    --dbuser="{db_user}" \
-    --dbpass="{db_pass}" \
+    --dbname="$MYSQL_DATABASE" \
+    --dbuser="$MYSQL_USER" \
+    --dbpass="$MYSQL_PASSWORD" \
     --dbhost="db" \
     --force \
     --extra-php="
-define('WP_HOME', 'https://{domain}');
-define('WP_SITEURL', 'https://{domain}');
+define('WP_HOME', 'https://${{DOMAIN}}');
+define('WP_SITEURL', 'https://${{DOMAIN}}');
 define('FORCE_SSL_ADMIN', true);
 if (isset(\$_SERVER['HTTP_X_FORWARDED_PROTO']) && \$_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') {{
     \$_SERVER['HTTPS'] = 'on';
@@ -522,11 +528,11 @@ if (isset(\$_SERVER['HTTP_X_FORWARDED_PROTO']) && \$_SERVER['HTTP_X_FORWARDED_PR
 if ! docker compose run --rm wpcli wp core is-installed --allow-root 2>/dev/null; then
     echo "[BOOTSTRAP] Installing WordPress core via wpcli..."
     docker compose run --rm wpcli wp core install \
-        --url="https://{domain}" \
-        --title="{wp_title}" \
-        --admin_user="{wp_user}" \
-        --admin_password="{wp_pass}" \
-        --admin_email="{wp_email}" \
+        --url="https://${{DOMAIN}}" \
+        --title="$WP_SITE_TITLE" \
+        --admin_user="$WP_ADMIN_USER" \
+        --admin_password="$WP_ADMIN_PASSWORD" \
+        --admin_email="$WP_ADMIN_EMAIL" \
         --skip-email \
         --allow-root
 else
@@ -591,17 +597,21 @@ echo "[BOOTSTRAP] Dynamic DNS (DDNS) service activated and running."
 
 echo "[BOOTSTRAP] Stack successfully deployed and active!"
 "#,
-            domain = cfg.domain,
-            mail_acc = cfg.mail_account,
-            mail_pass = cfg.mail_password,
-            db_name = cfg.mysql_database,
-            db_user = cfg.mysql_user,
-            db_pass = cfg.mysql_password,
-            wp_title = cfg.wp_site_title,
-            wp_user = cfg.wp_admin_user,
-            wp_pass = cfg.wp_admin_password,
-            wp_email = cfg.wp_admin_email,
             mu_plugin_b64 = mu_plugin_b64
         )
     }
+}
+
+/// Helper function to safely escape strings for .env file
+fn escape_env(val: &str) -> String {
+    let clean = val.replace('\r', "").replace('\n', "");
+    let escaped = clean.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{}\"", escaped)
+}
+
+/// Helper function to safely escape strings for PHP code
+fn escape_php_string(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('\'', "\\'")
+        .replace('\0', "")
 }
