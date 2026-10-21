@@ -605,7 +605,11 @@ echo "[BOOTSTRAP] Stack successfully deployed and active!"
 /// Helper function to safely escape strings for .env file
 fn escape_env(val: &str) -> String {
     let clean = val.replace('\r', "").replace('\n', "");
-    let escaped = clean.replace('\\', "\\\\").replace('"', "\\\"");
+    let escaped = clean
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('$', "\\$")
+        .replace('`', "\\`");
     format!("\"{}\"", escaped)
 }
 

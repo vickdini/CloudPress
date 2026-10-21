@@ -57,8 +57,8 @@ pub fn validate_ssh_target(username: &str, host: &str) -> Result<(), String> {
     if !username.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
         return Err("Invalid characters in SSH username".into());
     }
-    if host.is_empty() || host.contains(|c: char| c.is_whitespace() || c == '\'' || c == '"' || c == ';') {
-        return Err("Invalid characters in SSH host".into());
+    if host.is_empty() || !host.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == ':') {
+        return Err("Invalid characters in SSH host (only alphanumeric, '.', '-', and ':' are allowed)".into());
     }
     Ok(())
 }
@@ -312,9 +312,9 @@ impl SshManager {
     ) -> Result<(), String> {
         validate_ssh_target(&cfg.username, &cfg.host)?;
 
-        // Ensure remote path does not contain shell metacharacters
-        if remote_path.contains(|c: char| c == ';' || c == '&' || c == '|' || c == '`' || c == '$' || c == '\n' || c == '\r' || c.is_whitespace()) {
-            return Err("Invalid characters in remote file path".into());
+        // Ensure remote path only contains safe filesystem characters (no shell metacharacters or quotes)
+        if remote_path.is_empty() || !remote_path.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '/' || c == '-') {
+            return Err("Invalid characters in remote file path (only alphanumeric, '.', '_', '/', and '-' are allowed)".into());
         }
 
         use base64::Engine;
