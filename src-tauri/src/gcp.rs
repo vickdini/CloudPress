@@ -477,7 +477,7 @@ impl GcpProvisioner {
 
         if !self.config.ssh_public_key.trim().is_empty() {
             let formatted_key = format_gcp_ssh_key(&self.config.ssh_public_key);
-            cmd.arg(format!("--metadata=ssh-keys={}", formatted_key));
+            cmd.arg(format!("--metadata=enable-oslogin=FALSE,ssh-keys={}", formatted_key));
         }
 
         let _ = app_handle.emit(
@@ -1039,6 +1039,10 @@ async fn create_instance_and_poll_ip<R: tauri::Runtime>(
         ],
         "metadata": {
             "items": [
+                {
+                    "key": "enable-oslogin",
+                    "value": "FALSE"
+                },
                 {
                     "key": "ssh-keys",
                     "value": &formatted_ssh_key
