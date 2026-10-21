@@ -121,9 +121,24 @@ pub async fn list_google_projects(access_token: String) -> Result<Vec<crate::gcp
 
 #[tauri::command]
 pub fn open_external_url(url: String) -> Result<(), String> {
-    if !url.starts_with("http://") && !url.starts_with("https://") {
+    let trimmed = url.trim();
+    if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
         return Err("Only HTTP/HTTPS URLs are allowed".to_string());
     }
+
+    // Parse with Url to ensure valid hostname and protocol structure
+    let parsed = reqwest::Url::parse(trimmed)
+        .map_err(|e| format!("Invalid URL: {}", e))?;
+
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err("Only HTTP and HTTPS schemes are supported".to_string());
+    }
+
+    if parsed.host_str().is_none() {
+        return Err("URL must contain a valid host".to_string());
+    }
+
+    let safe_url = parsed.to_string();
 
     #[cfg(target_os = "windows")]
     {
@@ -141,7 +156,7 @@ pub fn open_external_url(url: String) -> Result<(), String> {
 
         use std::os::windows::ffi::OsStrExt;
         let wide_op: Vec<u16> = std::ffi::OsStr::new("open").encode_wide().chain(Some(0)).collect();
-        let wide_url: Vec<u16> = std::ffi::OsStr::new(&url).encode_wide().chain(Some(0)).collect();
+        let wide_url: Vec<u16> = std::ffi::OsStr::new(&safe_url).encode_wide().chain(Some(0)).collect();
 
         unsafe {
             let res = ShellExecuteW(
@@ -162,7 +177,7 @@ pub fn open_external_url(url: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")
-            .arg(&url)
+            .arg(&safe_url)
             .spawn()
             .map_err(|e| format!("Failed to open URL: {}", e))?;
     }
@@ -170,7 +185,7 @@ pub fn open_external_url(url: String) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
         std::process::Command::new("xdg-open")
-            .arg(&url)
+            .arg(&safe_url)
             .spawn()
             .map_err(|e| format!("Failed to open URL: {}", e))?;
     }
@@ -210,8 +225,48 @@ fn get_config_dir() -> PathBuf {
 pub fn save_profile(profile_json: String) -> Result<String, String> {
     let dir = get_config_dir();
     fs::create_dir_all(&dir).map_err(|e| format!("Failed to create config directory: {}", e))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = fs::metadata(&dir) {
+            let mut perms = meta.permissions();
+            perms.set_mode(0o700);
+            let _ = fs::set_permissions(&dir, perms);
+        }
+    }
+
     let path = dir.join("profile.json");
     fs::write(&path, profile_json).map_err(|e| format!("Failed to save profile: {}", e))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = fs::metadata(&path) {
+            let mut perms = meta.permissions();
+            perms.set_mode(0o600);
+            let _ = fs::set_permissions(&path, perms);
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        if let Ok(username) = std::env::var("USERNAME") {
+            if !username.trim().is_empty() {
+                let path_str = path.to_string_lossy().to_string();
+                let _ = crate::process_utils::std_command("icacls")
+                    .arg(&path_str)
+                    .arg("/inheritance:r")
+                    .output();
+                let _ = crate::process_utils::std_command("icacls")
+                    .arg(&path_str)
+                    .arg("/grant:r")
+                    .arg(format!("{}:(R,W)", username))
+                    .output();
+            }
+        }
+    }
+
     Ok("Profile saved successfully".into())
 }
 
@@ -497,7 +552,7 @@ pub async fn deploy_full_stack(
             private_key: payload.ssh_private_key.clone(),
         };
 
-        let temp_key_path = match SshManager::save_temp_key(&payload.ssh_private_key) {
+        let temp_key_guard = match SshManager::save_temp_key(&payload.ssh_private_key) {
             Ok(k) => k,
             Err(e) => {
                 emit_stage(
@@ -511,9 +566,8 @@ pub async fn deploy_full_stack(
             }
         };
 
-        // Wait for SSH daemon and user keys to be completely ready on the newly created VM
-        if let Err(e) = SshManager::wait_for_ssh_ready(&ssh_cfg, &temp_key_path, 90, &app_handle).await {
-            let _ = std::fs::remove_file(&temp_key_path);
+        // Wait for SSH daemon and user keys to be completely ready on the newly created VM (240s for initial boot & cloud-init)
+        if let Err(e) = SshManager::wait_for_ssh_ready(&ssh_cfg, temp_key_guard.path(), 240, &app_handle).await {
             emit_stage(
                 &app_handle,
                 3,
@@ -534,13 +588,14 @@ pub async fn deploy_full_stack(
         let mut prep_proc = crate::process_utils::tokio_command("ssh");
         prep_proc
             .arg("-i")
-            .arg(&temp_key_path)
+            .arg(temp_key_guard.path())
             .arg("-o")
             .arg("StrictHostKeyChecking=no")
             .arg("-o")
-            .arg("UserKnownHostsFile=NUL")
+            .arg(format!("UserKnownHostsFile={}", crate::ssh::get_null_device()))
             .arg("-o")
             .arg("ConnectTimeout=15")
+            .arg("--")
             .arg(format!("ubuntu@{}", vm_ip))
             .arg(prepare_cmd);
         let prep_res = prep_proc.output().await;
@@ -582,13 +637,12 @@ pub async fn deploy_full_stack(
             emit_log(&app_handle, format!("[SFTP/SSH] Uploading {}...", filename));
             if let Err(e) = SshManager::upload_file_content(
                 &ssh_cfg,
-                &temp_key_path,
+                temp_key_guard.path(),
                 filename,
                 content,
             )
             .await
             {
-                let _ = std::fs::remove_file(&temp_key_path);
                 emit_stage(
                     &app_handle,
                     3,
@@ -609,7 +663,6 @@ pub async fn deploy_full_stack(
         );
 
         if is_deployment_cancelled() {
-            let _ = std::fs::remove_file(&temp_key_path);
             return Err("Deployment cancelled by user.".into());
         }
 
@@ -624,11 +677,10 @@ pub async fn deploy_full_stack(
             "Running remote bootstrap script (Swap, Firewall, Docker, Caddy, WP, Mail)...",
         );
 
-        let raw_dkim = match SshManager::run_bootstrap_stream(&ssh_cfg, &temp_key_path, &app_handle).await
+        let raw_dkim = match SshManager::run_bootstrap_stream(&ssh_cfg, temp_key_guard.path(), &app_handle).await
         {
             Ok(dkim) => dkim,
             Err(e) => {
-                let _ = std::fs::remove_file(&temp_key_path);
                 emit_stage(
                     &app_handle,
                     4,
@@ -640,7 +692,8 @@ pub async fn deploy_full_stack(
             }
         };
 
-        let _ = std::fs::remove_file(&temp_key_path);
+        // Explicit drop drops the guard and deletes the temp key
+        drop(temp_key_guard);
 
         emit_stage(
             &app_handle,

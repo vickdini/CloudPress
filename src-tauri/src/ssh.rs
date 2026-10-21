@@ -32,6 +32,49 @@ impl Default for SshConfig {
     }
 }
 
+/// RAII guard that automatically removes the temporary SSH key file when dropped
+pub struct TempKeyGuard {
+    path: PathBuf,
+}
+
+impl TempKeyGuard {
+    pub fn path(&self) -> &PathBuf {
+        &self.path
+    }
+}
+
+impl Drop for TempKeyGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Validates SSH username and host to protect against command-line argument injection
+pub fn validate_ssh_target(username: &str, host: &str) -> Result<(), String> {
+    if username.starts_with('-') || host.starts_with('-') {
+        return Err("SSH username and host must not start with '-'".into());
+    }
+    if !username.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return Err("Invalid characters in SSH username".into());
+    }
+    if host.is_empty() || host.contains(|c: char| c.is_whitespace() || c == '\'' || c == '"' || c == ';') {
+        return Err("Invalid characters in SSH host".into());
+    }
+    Ok(())
+}
+
+/// Returns the platform-appropriate null device ("NUL" on Windows, "/dev/null" on Unix)
+pub fn get_null_device() -> &'static str {
+    #[cfg(windows)]
+    {
+        "NUL"
+    }
+    #[cfg(not(windows))]
+    {
+        "/dev/null"
+    }
+}
+
 pub struct SshManager;
 
 impl SshManager {
@@ -55,68 +98,75 @@ impl SshManager {
         })
     }
 
-    /// Saves the private key to a secure temporary file and returns the path
-    pub fn save_temp_key(key_content: &str) -> Result<PathBuf, String> {
+    /// Saves the private key to a secure temporary file and returns a guard that auto-deletes on drop
+    pub fn save_temp_key(key_content: &str) -> Result<TempKeyGuard, String> {
         let temp_dir = std::env::temp_dir();
         let key_path = temp_dir.join(format!("cloudpress_key_{}", uuid_simple()));
-
-        let mut file = std::fs::File::create(&key_path)
-            .map_err(|e| format!("Failed to create temporary SSH key file: {}", e))?;
-
-        // Normalize line endings to LF
         let normalized = key_content.replace("\r\n", "\n");
-        file.write_all(normalized.as_bytes())
-            .map_err(|e| format!("Failed to write private key: {}", e))?;
-
-        drop(file);
 
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&key_path)
-                .map_err(|e| e.to_string())?
-                .permissions();
-            perms.set_mode(0o600);
-            std::fs::set_permissions(&key_path, perms).map_err(|e| e.to_string())?;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&key_path)
+                .map_err(|e| format!("Failed to create temporary SSH key file: {}", e))?;
+            file.write_all(normalized.as_bytes())
+                .map_err(|e| format!("Failed to write private key: {}", e))?;
         }
 
         #[cfg(windows)]
         {
-            let username = std::env::var("USERNAME").unwrap_or_else(|_| "Users".to_string());
-            let path_str = key_path.to_string_lossy().to_string();
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&key_path)
+                .map_err(|e| format!("Failed to create temporary SSH key file: {}", e))?;
+            file.write_all(normalized.as_bytes())
+                .map_err(|e| format!("Failed to write private key: {}", e))?;
+            drop(file);
 
-            // 1. Remove inheritance and wipe all other user/group permissions
-            let _ = crate::process_utils::std_command("icacls")
-                .arg(&path_str)
-                .arg("/inheritance:r")
-                .output();
+            if let Ok(username) = std::env::var("USERNAME") {
+                if !username.trim().is_empty() {
+                    let path_str = key_path.to_string_lossy().to_string();
+                    // 1. Remove inheritance and wipe all other user/group permissions
+                    let _ = crate::process_utils::std_command("icacls")
+                        .arg(&path_str)
+                        .arg("/inheritance:r")
+                        .output();
 
-            // 2. Explicitly grant only the current user Read & Write permissions
-            let _ = crate::process_utils::std_command("icacls")
-                .arg(&path_str)
-                .arg("/grant:r")
-                .arg(format!("{}:(R,W)", username))
-                .output();
+                    // 2. Explicitly grant only the current user Read & Write permissions
+                    let _ = crate::process_utils::std_command("icacls")
+                        .arg(&path_str)
+                        .arg("/grant:r")
+                        .arg(format!("{}:(R,W)", username))
+                        .output();
+                }
+            }
         }
 
-        Ok(key_path)
+        Ok(TempKeyGuard { path: key_path })
     }
 
     /// Test basic SSH connectivity
     pub async fn test_connection(cfg: &SshConfig) -> Result<String, String> {
-        let key_path = Self::save_temp_key(&cfg.private_key)?;
+        validate_ssh_target(&cfg.username, &cfg.host)?;
+        let key_guard = Self::save_temp_key(&cfg.private_key)?;
 
         let mut cmd = crate::process_utils::tokio_command("ssh");
         cmd.arg("-i")
-            .arg(&key_path)
+            .arg(key_guard.path())
             .arg("-p")
             .arg(cfg.port.to_string())
             .arg("-o")
             .arg("StrictHostKeyChecking=no")
             .arg("-o")
-            .arg("UserKnownHostsFile=NUL")
+            .arg(format!("UserKnownHostsFile={}", get_null_device()))
             .arg("-o")
             .arg("ConnectTimeout=10")
+            .arg("--")
             .arg(format!("{}@{}", cfg.username, cfg.host))
             .arg("echo 'SSH_CONNECTION_SUCCESS'");
 
@@ -126,8 +176,6 @@ impl SshManager {
             .output()
             .await
             .map_err(|e| format!("SSH command execution failed: {}", e))?;
-
-        let _ = std::fs::remove_file(key_path);
 
         if output.status.success() {
             Ok("SSH connection established successfully!".into())
@@ -144,11 +192,16 @@ impl SshManager {
         max_wait_secs: u64,
         app_handle: &tauri::AppHandle<R>,
     ) -> Result<(), String> {
+        validate_ssh_target(&cfg.username, &cfg.host)?;
         let start = std::time::Instant::now();
         let _ = app_handle.emit(
             "deploy-log",
-            format!("[SSH] Waiting for SSH service on {} to start and authenticate...", cfg.host),
+            format!("[SSH] Waiting for SSH service on {} to start and authenticate (timeout: {}s)...", cfg.host, max_wait_secs),
         );
+
+        let mut last_err = String::new();
+        let mut last_logged_state = String::new();
+        let mut last_log_time = std::time::Instant::now();
 
         while start.elapsed().as_secs() < max_wait_secs {
             let mut cmd = crate::process_utils::tokio_command("ssh");
@@ -159,33 +212,74 @@ impl SshManager {
                 .arg("-o")
                 .arg("StrictHostKeyChecking=no")
                 .arg("-o")
-                .arg("UserKnownHostsFile=NUL")
+                .arg(format!("UserKnownHostsFile={}", get_null_device()))
                 .arg("-o")
                 .arg("ConnectTimeout=5")
+                .arg("--")
                 .arg(format!("{}@{}", cfg.username, cfg.host))
                 .arg("echo 'SSH_VM_READY'");
 
             cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-            if let Ok(output) = cmd.output().await {
-                if output.status.success() {
-                    let out_str = String::from_utf8_lossy(&output.stdout);
-                    if out_str.contains("SSH_VM_READY") {
-                        let _ = app_handle.emit(
-                            "deploy-log",
-                            format!("[SSH] VM {} is ready and accepted key authentication! Proceeding...", cfg.host),
-                        );
-                        return Ok(());
+            match cmd.output().await {
+                Ok(output) => {
+                    if output.status.success() {
+                        let out_str = String::from_utf8_lossy(&output.stdout);
+                        if out_str.contains("SSH_VM_READY") {
+                            let _ = app_handle.emit(
+                                "deploy-log",
+                                format!("[SSH] VM {} is ready and accepted key authentication! Proceeding...", cfg.host),
+                            );
+                            return Ok(());
+                        }
+                    } else {
+                        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                        if !stderr.is_empty() {
+                            last_err = stderr.clone();
+                        }
+
+                        let state = if last_err.contains("Connection timed out") {
+                            "VM starting up network interface (Connection timed out)..."
+                        } else if last_err.contains("Connection refused") {
+                            "VM network active; waiting for SSH daemon to start..."
+                        } else if last_err.contains("Permission denied") {
+                            "SSH daemon listening; waiting for cloud-init to inject SSH keys..."
+                        } else if last_err.contains("UNPROTECTED PRIVATE KEY FILE") || last_err.contains("Permissions") {
+                            "SSH key permissions warning, adjusting..."
+                        } else if !last_err.is_empty() {
+                            last_err.as_str()
+                        } else {
+                            "Waiting for response..."
+                        };
+
+                        let elapsed = start.elapsed().as_secs();
+                        if state != last_logged_state || last_log_time.elapsed().as_secs() >= 15 {
+                            last_logged_state = state.to_string();
+                            last_log_time = std::time::Instant::now();
+                            let _ = app_handle.emit(
+                                "deploy-log",
+                                format!("[SSH Check {}s] {}", elapsed, state),
+                            );
+                        }
                     }
+                }
+                Err(e) => {
+                    last_err = format!("Failed to spawn local ssh: {}", e);
                 }
             }
 
             tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
         }
 
+        let err_detail = if last_err.is_empty() {
+            "No response received from VM.".to_string()
+        } else {
+            format!("Last SSH response: {}", last_err)
+        };
+
         Err(format!(
-            "Timed out waiting for SSH service on {} after {}s. The VM may still be booting.",
-            cfg.host, max_wait_secs
+            "Timed out waiting for SSH service on {} after {}s. {}. The VM may still be booting.",
+            cfg.host, max_wait_secs, err_detail
         ))
     }
 
@@ -196,6 +290,13 @@ impl SshManager {
         remote_path: &str,
         content: &str,
     ) -> Result<(), String> {
+        validate_ssh_target(&cfg.username, &cfg.host)?;
+
+        // Ensure remote path does not contain shell metacharacters
+        if remote_path.contains(|c: char| c == ';' || c == '&' || c == '|' || c == '`' || c == '$' || c == '\n' || c == '\r' || c.is_whitespace()) {
+            return Err("Invalid characters in remote file path".into());
+        }
+
         use base64::Engine;
         let b64 = base64::engine::general_purpose::STANDARD.encode(content.as_bytes());
 
@@ -215,9 +316,10 @@ impl SshManager {
                 .arg("-o")
                 .arg("StrictHostKeyChecking=no")
                 .arg("-o")
-                .arg("UserKnownHostsFile=NUL")
+                .arg(format!("UserKnownHostsFile={}", get_null_device()))
                 .arg("-o")
                 .arg("ConnectTimeout=15")
+                .arg("--")
                 .arg(format!("{}@{}", cfg.username, cfg.host))
                 .arg(&remote_cmd);
 
@@ -249,6 +351,7 @@ impl SshManager {
         key_path: &PathBuf,
         app_handle: &tauri::AppHandle<R>,
     ) -> Result<String, String> {
+        validate_ssh_target(&cfg.username, &cfg.host)?;
         let _ = app_handle.emit(
             "deploy-log",
             format!("[SSH] Connecting to {}@{}...", cfg.username, cfg.host),
@@ -262,7 +365,8 @@ impl SshManager {
             .arg("-o")
             .arg("StrictHostKeyChecking=no")
             .arg("-o")
-            .arg("UserKnownHostsFile=NUL")
+            .arg(format!("UserKnownHostsFile={}", get_null_device()))
+            .arg("--")
             .arg(format!("{}@{}", cfg.username, cfg.host))
             .arg("sudo chmod +x /opt/wp-deployer/bootstrap.sh && sudo /opt/wp-deployer/bootstrap.sh");
 

@@ -476,10 +476,8 @@ impl GcpProvisioner {
         }
 
         if !self.config.ssh_public_key.trim().is_empty() {
-            cmd.arg(format!(
-                "--metadata=ssh-keys=ubuntu:{}",
-                self.config.ssh_public_key.trim()
-            ));
+            let formatted_key = format_gcp_ssh_key(&self.config.ssh_public_key);
+            cmd.arg(format!("--metadata=ssh-keys={}", formatted_key));
         }
 
         let _ = app_handle.emit(
@@ -957,9 +955,20 @@ async fn ensure_firewall_rules<R: tauri::Runtime>(
                 "[GCP] Security firewall configured (ports 80, 443, 22, 25, 587, 993 open).",
             );
         } else if res.status().as_u16() == 409 {
+            // Rule already exists: patch it to guarantee ports 22, 80, 443, 25, 587, 993 and tags are active
+            let patch_url = format!(
+                "https://compute.googleapis.com/compute/v1/projects/{}/global/firewalls/cloudpress-allow-web-mail",
+                project_id
+            );
+            let _ = client
+                .patch(&patch_url)
+                .bearer_auth(access_token)
+                .json(&fw_payload)
+                .send()
+                .await;
             let _ = app_handle.emit(
                 "deploy-log",
-                "[GCP] CloudPress firewall security rule already active.",
+                "[GCP] CloudPress firewall security rule verified and active (ports 80, 443, 22, 25, 587, 993).",
             );
         } else {
             let err_text = res.text().await.unwrap_or_default();
@@ -973,6 +982,20 @@ async fn ensure_firewall_rules<R: tauri::Runtime>(
     Ok(())
 }
 
+pub fn format_gcp_ssh_key(pub_key: &str) -> String {
+    let trimmed = pub_key.trim();
+    let without_user = if let Some(stripped) = trimmed.strip_prefix("ubuntu:") {
+        stripped.trim()
+    } else {
+        trimmed
+    };
+    if without_user.ends_with("ubuntu") {
+        format!("ubuntu:{}", without_user)
+    } else {
+        format!("ubuntu:{} ubuntu", without_user)
+    }
+}
+
 async fn create_instance_and_poll_ip<R: tauri::Runtime>(
     client: &reqwest::Client,
     access_token: &str,
@@ -981,6 +1004,7 @@ async fn create_instance_and_poll_ip<R: tauri::Runtime>(
     ssh_public_key: &str,
     app_handle: &tauri::AppHandle<R>,
 ) -> Result<GcpProvisioningResult, String> {
+    let formatted_ssh_key = format_gcp_ssh_key(ssh_public_key);
     let now = chrono::Utc::now().timestamp();
     let instance_name = format!("cloudpress-vm-{}", now);
     let url = format!(
@@ -1017,7 +1041,11 @@ async fn create_instance_and_poll_ip<R: tauri::Runtime>(
             "items": [
                 {
                     "key": "ssh-keys",
-                    "value": format!("ubuntu:{}", ssh_public_key.trim())
+                    "value": &formatted_ssh_key
+                },
+                {
+                    "key": "sshKeys",
+                    "value": &formatted_ssh_key
                 }
             ]
         },
