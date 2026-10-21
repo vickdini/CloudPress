@@ -549,10 +549,10 @@ export const Step2Server: React.FC<Step2ServerProps> = ({
                         />
                       </div>
                       <div className="space-y-1">
-                        <label className="text-[10px] font-semibold text-slate-300">OAuth Client Secret (Optional)</label>
+                        <label className="text-[10px] font-semibold text-slate-300">OAuth Client Secret (Required if custom Client ID)</label>
                         <input
                           type="password"
-                          placeholder="Leave blank for PKCE desktop client"
+                          placeholder="Enter client secret if using your own Client ID"
                           value={customClientSecret}
                           onChange={e => setCustomClientSecret(e.target.value)}
                           className="w-full px-3 py-2 text-xs bg-surface-lighter border border-surface-border rounded-lg text-white font-mono focus:outline-none focus:border-blue-500 select-text"

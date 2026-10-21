@@ -8,6 +8,7 @@ use tauri::Emitter;
 
 pub const DEFAULT_GCP_CLIENT_ID: &str = "32555940559.apps.googleusercontent.com";
 pub const DEFAULT_GCP_CLIENT_SECRET: &str = "ZmssLNjJy2998hD4CTg2ejr2";
+// NOTE: Google OAuth requires client_secret during token exchange even when using PKCE.
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GcpConfig {
@@ -225,18 +226,29 @@ impl GcpProvisioner {
             .trim()
             .to_string();
 
-        let client_id = self
+        let is_default_client = self
             .config
             .custom_oauth_client_id
             .as_deref()
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or(DEFAULT_GCP_CLIENT_ID);
-        let client_secret = self
-            .config
-            .custom_oauth_client_secret
-            .as_deref()
-            .filter(|s| !s.trim().is_empty())
-            .or(Some(DEFAULT_GCP_CLIENT_SECRET));
+            .map(|s| s.trim().is_empty())
+            .unwrap_or(true);
+        let client_id = if is_default_client {
+            DEFAULT_GCP_CLIENT_ID
+        } else {
+            self.config.custom_oauth_client_id.as_deref().unwrap().trim()
+        };
+        let client_secret = if is_default_client {
+            self.config
+                .custom_oauth_client_secret
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .or(Some(DEFAULT_GCP_CLIENT_SECRET))
+        } else {
+            self.config
+                .custom_oauth_client_secret
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+        };
 
         // If we have a refresh token, verify/refresh access token
         if let Some(ref refresh_tok) = self.config.oauth_refresh_token {
@@ -524,18 +536,29 @@ impl GcpProvisioner {
                 .unwrap_or_default()
                 .trim()
                 .to_string();
-            let client_id = self
+            let is_default_client = self
                 .config
                 .custom_oauth_client_id
                 .as_deref()
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or(DEFAULT_GCP_CLIENT_ID);
-            let client_secret = self
-                .config
-                .custom_oauth_client_secret
-                .as_deref()
-                .filter(|s| !s.trim().is_empty())
-                .or(Some(DEFAULT_GCP_CLIENT_SECRET));
+                .map(|s| s.trim().is_empty())
+                .unwrap_or(true);
+            let client_id = if is_default_client {
+                DEFAULT_GCP_CLIENT_ID
+            } else {
+                self.config.custom_oauth_client_id.as_deref().unwrap().trim()
+            };
+            let client_secret = if is_default_client {
+                self.config
+                    .custom_oauth_client_secret
+                    .as_deref()
+                    .filter(|s| !s.trim().is_empty())
+                    .or(Some(DEFAULT_GCP_CLIENT_SECRET))
+            } else {
+                self.config
+                    .custom_oauth_client_secret
+                    .as_deref()
+                    .filter(|s| !s.trim().is_empty())
+            };
 
             // If we have a refresh token, verify/refresh access token
             if let Some(ref refresh_tok) = self.config.oauth_refresh_token {
@@ -1166,14 +1189,25 @@ pub async fn start_google_oauth_flow(
     let challenge = URL_SAFE_NO_PAD.encode(hasher.finalize());
     let state = generate_random_string(32);
 
-    let client_id = custom_client_id
+    let is_default_client = custom_client_id
         .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or(DEFAULT_GCP_CLIENT_ID);
-    let client_secret = custom_client_secret
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .or(Some(DEFAULT_GCP_CLIENT_SECRET));
+        .map(|s| s.trim().is_empty())
+        .unwrap_or(true);
+    let client_id = if is_default_client {
+        DEFAULT_GCP_CLIENT_ID
+    } else {
+        custom_client_id.as_deref().unwrap().trim()
+    };
+    let client_secret = if is_default_client {
+        custom_client_secret
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .or(Some(DEFAULT_GCP_CLIENT_SECRET))
+    } else {
+        custom_client_secret
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+    };
 
     let scopes = "openid https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/compute";
 
@@ -1225,11 +1259,12 @@ pub async fn start_google_oauth_flow(
     }
 
     if let Some(err) = error {
+        let safe_err = html_escape(&err);
         let html_err = format!(
             "HTTP/1.1 400 Bad Request\r\nContent-Type: text/html; charset=utf-8\r\n\r\n\
             <html><body style='font-family:-apple-system,sans-serif;background:#0f172a;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh;'>\
             <div style='text-align:center;'><h2>Google Sign-In Cancelled</h2><p style='color:#f87171;'>{}</p></div></body></html>",
-            err
+            safe_err
         );
         let _ = socket.write_all(html_err.as_bytes()).await;
         return Err(format!("Google sign-in cancelled or denied: {}", err));
@@ -1347,7 +1382,16 @@ pub async fn refresh_oauth_token(
     let client = reqwest::Client::new();
     let mut params = std::collections::HashMap::new();
     params.insert("client_id", client_id);
-    if let Some(sec) = client_secret {
+    let effective_secret = client_secret
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            if client_id == DEFAULT_GCP_CLIENT_ID {
+                Some(DEFAULT_GCP_CLIENT_SECRET)
+            } else {
+                None
+            }
+        });
+    if let Some(sec) = effective_secret {
         if !sec.trim().is_empty() {
             params.insert("client_secret", sec);
         }
@@ -1425,3 +1469,12 @@ mod urlencoding {
         encoded
     }
 }
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
+}
+
