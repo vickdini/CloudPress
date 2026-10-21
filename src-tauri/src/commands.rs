@@ -351,7 +351,15 @@ pub async fn deploy_full_stack(
             .map(|s| !s.trim().is_empty())
             .unwrap_or(false);
 
-        let gcp_prov = GcpProvisioner::new(gcp_cfg.clone());
+        let mut gcp_cfg = gcp_cfg.clone();
+        if !payload.ssh_private_key.trim().is_empty() {
+            if let Ok(derived_pub) = SshManager::derive_public_key(&payload.ssh_private_key) {
+                emit_log(&app_handle, "[Security Key] Verified Ed25519 public key derived from private key.");
+                gcp_cfg.ssh_public_key = derived_pub;
+            }
+        }
+
+        let gcp_prov = GcpProvisioner::new(gcp_cfg);
         let res = match gcp_prov.provision_vm(&app_handle).await {
             Ok(r) => r,
             Err(e) => {
@@ -589,6 +597,10 @@ pub async fn deploy_full_stack(
         prep_proc
             .arg("-i")
             .arg(temp_key_guard.path())
+            .arg("-o")
+            .arg("IdentitiesOnly=yes")
+            .arg("-o")
+            .arg("PreferredAuthentications=publickey")
             .arg("-o")
             .arg("StrictHostKeyChecking=no")
             .arg("-o")

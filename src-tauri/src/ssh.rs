@@ -98,6 +98,18 @@ impl SshManager {
         })
     }
 
+    /// Derives the OpenSSH public key corresponding to a given private key
+    pub fn derive_public_key(private_key_str: &str) -> Result<String, String> {
+        let normalized = private_key_str.replace("\r\n", "\n");
+        let priv_key = PrivateKey::from_openssh(&normalized)
+            .map_err(|e| format!("Failed to parse private key: {}", e))?;
+        let pub_key = priv_key.public_key();
+        let openssh_pub = pub_key
+            .to_openssh()
+            .map_err(|e| format!("Failed to encode public key: {}", e))?;
+        Ok(format!("{} ubuntu", openssh_pub))
+    }
+
     /// Saves the private key to a secure temporary file and returns a guard that auto-deletes on drop
     pub fn save_temp_key(key_content: &str) -> Result<TempKeyGuard, String> {
         let temp_dir = std::env::temp_dir();
@@ -161,6 +173,10 @@ impl SshManager {
             .arg("-p")
             .arg(cfg.port.to_string())
             .arg("-o")
+            .arg("IdentitiesOnly=yes")
+            .arg("-o")
+            .arg("PreferredAuthentications=publickey")
+            .arg("-o")
             .arg("StrictHostKeyChecking=no")
             .arg("-o")
             .arg(format!("UserKnownHostsFile={}", get_null_device()))
@@ -209,6 +225,10 @@ impl SshManager {
                 .arg(key_path)
                 .arg("-p")
                 .arg(cfg.port.to_string())
+                .arg("-o")
+                .arg("IdentitiesOnly=yes")
+                .arg("-o")
+                .arg("PreferredAuthentications=publickey")
                 .arg("-o")
                 .arg("StrictHostKeyChecking=no")
                 .arg("-o")
@@ -314,6 +334,10 @@ impl SshManager {
                 .arg("-p")
                 .arg(cfg.port.to_string())
                 .arg("-o")
+                .arg("IdentitiesOnly=yes")
+                .arg("-o")
+                .arg("PreferredAuthentications=publickey")
+                .arg("-o")
                 .arg("StrictHostKeyChecking=no")
                 .arg("-o")
                 .arg(format!("UserKnownHostsFile={}", get_null_device()))
@@ -362,6 +386,10 @@ impl SshManager {
             .arg(key_path)
             .arg("-p")
             .arg(cfg.port.to_string())
+            .arg("-o")
+            .arg("IdentitiesOnly=yes")
+            .arg("-o")
+            .arg("PreferredAuthentications=publickey")
             .arg("-o")
             .arg("StrictHostKeyChecking=no")
             .arg("-o")

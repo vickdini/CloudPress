@@ -1005,6 +1005,40 @@ async fn create_instance_and_poll_ip<R: tauri::Runtime>(
     app_handle: &tauri::AppHandle<R>,
 ) -> Result<GcpProvisioningResult, String> {
     let formatted_ssh_key = format_gcp_ssh_key(ssh_public_key);
+    let pub_key_only = ssh_public_key
+        .trim()
+        .strip_prefix("ubuntu:")
+        .unwrap_or(ssh_public_key.trim());
+
+    let startup_script = format!(
+        r#"#!/bin/bash
+id -u ubuntu &>/dev/null || useradd -m -s /bin/bash ubuntu
+usermod -aG sudo ubuntu || true
+mkdir -p /etc/sudoers.d
+echo "ubuntu ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/90-cloudpress-ubuntu
+chmod 0440 /etc/sudoers.d/90-cloudpress-ubuntu
+
+mkdir -p /home/ubuntu/.ssh
+echo "{}" >> /home/ubuntu/.ssh/authorized_keys
+sort -u /home/ubuntu/.ssh/authorized_keys -o /home/ubuntu/.ssh/authorized_keys
+chown -R ubuntu:ubuntu /home/ubuntu/.ssh
+chmod 700 /home/ubuntu/.ssh
+chmod 600 /home/ubuntu/.ssh/authorized_keys
+
+mkdir -p /root/.ssh
+echo "{}" >> /root/.ssh/authorized_keys
+sort -u /root/.ssh/authorized_keys -o /root/.ssh/authorized_keys
+chmod 700 /root/.ssh
+chmod 600 /root/.ssh/authorized_keys
+
+if [ -f /etc/ssh/sshd_config ]; then
+    sed -i 's/^#*PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+    systemctl reload ssh || systemctl reload sshd || service ssh reload || true
+fi
+"#,
+        pub_key_only, pub_key_only
+    );
+
     let now = chrono::Utc::now().timestamp();
     let instance_name = format!("cloudpress-vm-{}", now);
     let url = format!(
@@ -1050,6 +1084,10 @@ async fn create_instance_and_poll_ip<R: tauri::Runtime>(
                 {
                     "key": "sshKeys",
                     "value": &formatted_ssh_key
+                },
+                {
+                    "key": "startup-script",
+                    "value": &startup_script
                 }
             ]
         },
